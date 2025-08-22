@@ -1,4 +1,4 @@
-# Windborne Application — 24-Hour Constellation + Open-Meteo (GFS)
+# Windborne Application - 24-Hour Constellation + Open-Meteo (GFS)
 
 **Live demo:** https://case-study-wind-borne-systems.vercel.app  
 **Windborne proxy (hard-coded in the app):** `https://proxy-fmd5.vercel.app/api/proxy?url=`
