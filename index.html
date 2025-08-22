@@ -129,7 +129,7 @@ function makeIcon(val){
 /* ========= Open-Meteo (direct) for popup comparisons ========= */
 async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
   const base = 'https://api.open-meteo.com/v1/gfs';
-  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1`;
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
 
   const fetchOM = async (qs) => {
     const url = `${base}?${common}&${qs}`;
@@ -138,27 +138,22 @@ async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
     return res.json();
   };
 
-  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600; // unix seconds
-  const parseTime = (t) => (typeof t === 'number') ? t : (Number.isFinite(new Date(t).getTime()) ? Math.floor(new Date(t).getTime()/1000) : NaN);
-  const nearestIdx = (times) => {
-    let best = Infinity, idx = 0;
-    for (let i=0;i<times.length;i++){
-      const tt = parseTime(times[i]);
-      const d = Math.abs(tt - target);
-      if (Number.isFinite(d) && d < best){ best = d; idx = i; }
+  // try u/v — but don't die if it fails
+  let j, times;
+  try {
+    j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
+    times = j.hourly?.time || [];
+    if (times.length){
+      const i = nearestIdx(times); // your existing nearest function
+      const u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[i];
+      const v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[i];
+      if (typeof u === 'number' && typeof v === 'number') return { speed: Math.hypot(u, v), src: 'uv' };
     }
-    return idx;
-  };
-
-  // Try u/v first, then speed fallback
-  let j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
-  let times = j.hourly?.time || [];
-  if (times.length){
-    const i = nearestIdx(times);
-    const u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[i];
-    const v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[i];
-    if (typeof u === 'number' && typeof v === 'number') return { speed: Math.hypot(u, v), src: 'uv' };
+  } catch (_) {
+    // fall through to speed/direction
   }
+
+  // fallback: speed + direction
   j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
   times = j.hourly?.time || [];
   if (times.length){
@@ -346,3 +341,4 @@ Notes
 -->
 </body>
 </html>
+
