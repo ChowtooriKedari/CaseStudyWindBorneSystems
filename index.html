@@ -9,17 +9,21 @@
   <style>
     html,body,#app{height:100%;margin:0}
     #map{height:100%;}
-    .panel{position:absolute;top:10px;left:10px;z-index:1000;background:#ffffffd9;padding:10px 12px;border-radius:12px;backdrop-filter:saturate(1.2) blur(6px);box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:420px;font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif}
+    .panel{position:absolute;top:10px;left:10px;z-index:1000;background:#ffffffd9;padding:10px 12px;border-radius:12px;backdrop-filter:saturate(1.2) blur(6px);box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:520px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     .panel h1{margin:0 0 6px 0;font-size:16px}
     .panel .row{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
     .panel label{font-size:12px;color:#333}
     .chip{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef;border:1px solid #ccd;font-size:12px;margin-right:6px}
     .legend{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px}
     .legend .swatch{width:16px;height:10px;border-radius:3px;border:1px solid #0001}
-    .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:560px}
+    .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
     .btn{padding:6px 10px;border-radius:8px;border:1px solid #ccd;background:#f7f7ff;cursor:pointer}
     .btn:active{transform:translateY(1px)}
     .note{font-size:11px;color:#555;margin-top:6px}
+    .status{padding:2px 8px;border-radius:999px;border:1px solid #ccd;background:#f5fff5;font-size:12px}
+    .status.err{background:#fff5f5;border-color:#f3c0c0}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+    a.small{font-size:11px}
   </style>
 </head>
 <body>
@@ -34,6 +38,8 @@
         <option value="200">200 hPa (~12 km)</option>
       </select>
       <button id="refresh" class="btn">Refresh</button>
+      <span id="proxyStatus" class="status mono" title="CORS/proxy state">checking…</span>
+      <a id="proxyHelp" href="#" class="small">set proxy</a>
     </div>
     <div class="row">
       <span class="chip">Circle color = Windborne measured scalar (assumed wind speed, m/s)</span>
@@ -44,12 +50,12 @@
       <div class="swatch" style="background:#fee08b"></div>Medium
       <div class="swatch" style="background:#f46d43"></div>High (≈22 m/s)
     </div>
-    <div class="note">Why Open‑Meteo? No‑key global winds (GFS/others), hourly updates, pressure‑level u/v components for quick model‑vs‑balloon comparisons.
-    </div>
+    <div class="note">Open‑Meteo gives no‑key global winds with pressure‑level u/v components for quick model vs balloon comparisons.</div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    <b>Tips</b>: Click a balloon to see measured vs model wind and 24h drift track. Use the dropdown to change model level. Data refresh keeps the last 24 snapshots (00–23). If CORS blocks <code>a.windbornesystems.com</code> in your environment, deploy the tiny proxy shown in the repo README (Cloudflare Worker or Vercel) and set <code>?proxy=https://your-proxy/</code>.
+    <b>Tips</b>: Click a balloon for measured vs model wind and 24h drift track. Use the dropdown to change model level. A proxy is only needed if your browser blocks <code>a.windbornesystems.com</code> by CORS.
+    <div class="note">Proxy URL forms supported: <span class="mono">https://worker.example.com/?url=</span>, <span class="mono">https://proxy.example.com/</span> (will append encoded URL), or any string containing <span class="mono">{url}</span> as a placeholder.</div>
   </div>
 </div>
 
@@ -60,6 +66,16 @@ const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
 const QS = new URLSearchParams(location.search);
 const PROXY = QS.get('proxy') || '';
+
+// --- Proxy helpers ---
+function buildProxiedUrl(target){
+  if(!PROXY) return target;
+  const p = PROXY.trim();
+  if(p.includes('{url}')) return p.replace('{url}', encodeURIComponent(target));
+  if(/[?&]url=$/.test(p) || /[?]$/.test(p)) return p + encodeURIComponent(target);
+  if(p.endsWith('/')) return p + encodeURIComponent(target);
+  return p + encodeURIComponent(target);
+}
 
 // --- Map setup ---
 const map = L.map('map', {worldCopyJump:true}).setView([20,0], 2);
@@ -84,31 +100,44 @@ function colorFor(v){
   return '#f46d43';
 }
 
-// Robust JSON fetch handling line-delimited or malformed arrays
+// Detect likely CORS/network error type
+function isCorsLikeError(err){
+  return err && (err.name === 'TypeError' || /Failed to fetch|CORS|NetworkError/i.test(String(err)));
+}
+
+// Robust JSON fetch with optional proxy fallback and strict no-credentials
 async function robustFetchJson(url){
-  const res = await fetch(url, {cache:'no-store'});
-  if(!res.ok) throw new Error('HTTP '+res.status);
-  const text = await res.text();
-  // Try JSON.parse first
-  try { return JSON.parse(text); } catch(_){ }
-  // Try line-delimited objects -> array
-  const lines = text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
-    try { return JSON.parse('['+lines.join(',')+']'); } catch(_){ }
+  // try direct first
+  try{
+    const res = await fetch(url, {cache:'no-store', credentials:'omit', mode:'cors'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch(_){ /* fallthrough */ }
+    const lines = text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+    if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
+      try { return JSON.parse('['+lines.join(',')+']'); } catch(_){ }
+    }
+    const repaired = text.replace(/,(\s*[}\]])/g,'$1');
+    try { return JSON.parse(repaired); } catch(_){ }
+    const tripletRe = /\[\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*\]/g;
+    const out=[]; let m; while((m=tripletRe.exec(text))) out.push([+m[1],+m[2],+m[3]]);
+    if(out.length) return out;
+    throw new Error('Unparseable JSON');
+  }catch(e){
+    if(PROXY && isCorsLikeError(e)){
+      const proxied = buildProxiedUrl(url);
+      const res = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
+      if(!res.ok) throw new Error('Proxy HTTP '+res.status);
+      return res.json();
+    }
+    throw e;
   }
-  // Try to fix trailing commas
-  const repaired = text.replace(/,(\s*[}\]])/g,'$1');
-  try { return JSON.parse(repaired); } catch(_){ }
-  // Last resort: parse [ [lat,lon,val], ... ] by regexp
-  const tripletRe = /\[\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*\]/g;
-  const out=[]; let m; while((m=tripletRe.exec(text))) out.push([+m[1],+m[2],+m[3]]);
-  if(out.length) return out;
-  throw new Error('Unparseable JSON');
 }
 
 async function fetchSnapshot(h){
-  const u = (PROXY? PROXY+encodeURIComponent(WB_BASE): WB_BASE) + String(h).padStart(2,'0') + '.json';
-  return robustFetchJson(u);
+  const direct = WB_BASE + String(h).padStart(2,'0') + '.json';
+  const url = PROXY ? buildProxiedUrl(direct) : direct;
+  return robustFetchJson(url);
 }
 
 function haversine(a,b){
@@ -121,15 +150,12 @@ function haversine(a,b){
   return 2*R*Math.asin(Math.sqrt(aa));
 }
 
-// Link points across hours into tracks by nearest-neighbour (greedy). Since IDs are not provided,
-// we infer tracks by minimal distance with a max jump threshold.
+// Link points across hours into tracks by nearest-neighbour (greedy)
 function buildTracks(hourlyPoints, maxJump=800e3){ // 800 km
-  // hourlyPoints: array of arrays per hour: [[lat,lon,val], ...]
-  const tracks=[]; // each track: {pts:[{lat,lon,val,h}], last:[lat,lon]}
-  for(let h=hourlyPoints.length-1; h>=0; h--){ // start from oldest -> newest linkage
+  const tracks=[];
+  for(let h=hourlyPoints.length-1; h>=0; h--){
     const pts = hourlyPoints[h] || [];
     const assigned = new Array(pts.length).fill(false);
-    // First, try to continue existing tracks
     for(const tr of tracks){
       let bestIdx=-1, bestD=Infinity;
       for(let i=0;i<pts.length;i++) if(!assigned[i]){
@@ -140,111 +166,129 @@ function buildTracks(hourlyPoints, maxJump=800e3){ // 800 km
         const p=pts[bestIdx]; assigned[bestIdx]=true; tr.pts.push({lat:p[0],lon:p[1],val:p[2],h}); tr.last=[p[0],p[1]];
       }
     }
-    // Start new tracks for unassigned points
     for(let i=0;i<pts.length;i++) if(!assigned[i]){
       const p=pts[i];
       tracks.push({pts:[{lat:p[0],lon:p[1],val:p[2],h}], last:[p[0],p[1]]});
     }
   }
-  // reverse per-track points to chronological order
   for(const tr of tracks){ tr.pts.sort((a,b)=>a.h-b.h); }
   return tracks;
 }
 
 async function getOpenMeteoWind(lat, lon, level){
-  // Use Open‑Meteo GFS API for wind u/v at pressure level nearest to balloon altitude
-  // Docs: https://open-meteo.com/en/docs (pressure level variables)
-  const url = `https://api.open-meteo.com/v1/gfs?latitude=${lat}&longitude=${lon}&hourly=wind_speed_10m,wind_direction_10m,wind_u_${level}hPa,wind_v_${level}hPa&past_days=1&forecast_days=1&timeformat=unixtime`;
-  const res = await fetch(url, {cache:'no-store'});
+  const url = `https://api.open-meteo.com/v1/gfs?latitude=${lat}&longitude=${lon}&hourly=wind_u_${level}hPa,wind_v_${level}hPa&past_days=1&forecast_days=1&timeformat=unixtime`;
+  const res = await fetch(url, {cache:'no-store', credentials:'omit'});
   if(!res.ok) throw new Error('Open‑Meteo error');
-  const j = await res.json();
-  return j;
+  return res.json();
 }
 
 function arrow(lat, lon, u, v){
-  const speed = Math.hypot(u, v); // m/s
-  const dir = Math.atan2(u, v); // meteorological to map rotation tweak
-  const len = Math.min(1.5 + speed*0.05, 3.5); // degrees-ish scaling
+  const speed = Math.hypot(u, v);
+  const dir = Math.atan2(u, v);
+  const len = Math.min(1.5 + speed*0.05, 3.5);
   const dx = Math.sin(dir)*len; const dy = Math.cos(dir)*len;
   return L.polyline([[lat, lon],[lat+dy*0.01, lon+dx*0.01]], {color:'#333', weight:2, opacity:0.8, pane:'overlayPane'});
 }
 
 async function refresh(){
   const level = document.getElementById('level').value;
-  document.getElementById('refresh').disabled = true;
+  const btn = document.getElementById('refresh');
+  btn.disabled = true;
   layers.points.clearLayers(); layers.tracks.clearLayers(); layers.arrows.clearLayers();
 
-  // Fetch 24 snapshots in parallel, tolerate failures
-  const snaps = await Promise.all(Array.from({length:SNAP_MAX}, (_,i)=>
-    fetchSnapshot(i).catch(()=>[]) // failure -> empty
-  ));
-  const hourly = snaps.map(arr => Array.isArray(arr)? arr.filter(t=>Array.isArray(t) && t.length>=2): []);
-  const tracks = buildTracks(hourly);
+  try{
+    const snaps = await Promise.all(Array.from({length:SNAP_MAX}, (_,i)=>
+      fetchSnapshot(i).catch(()=>[])
+    ));
+    const hourly = snaps.map(arr => Array.isArray(arr)? arr.filter(t=>Array.isArray(t) && t.length>=2): []);
+    const tracks = buildTracks(hourly);
 
-  // Draw tracks
-  for(const tr of tracks){
-    if(tr.pts.length<2) continue;
-    const coords = tr.pts.map(p=>[p.lat, p.lon]);
-    L.polyline(coords, {color:'#888', weight:2, opacity:0.6}).addTo(layers.tracks);
-  }
+    for(const tr of tracks){
+      if(tr.pts.length<2) continue;
+      const coords = tr.pts.map(p=>[p.lat, p.lon]);
+      L.polyline(coords, {color:'#888', weight:2, opacity:0.6}).addTo(layers.tracks);
+    }
 
-  // Draw latest positions (hour 0)
-  const latest = hourly[0] || [];
-  for(const p of latest){
-    const [lat, lon, val] = p;
-    const circle = L.circleMarker([lat,lon], {
-      radius: 5 + (isFinite(val)? Math.min(Math.max(val,2),22)-2: 0)/2,
-      color: '#000', weight: 1, fillColor: colorFor(val), fillOpacity: 0.9
-    }).addTo(layers.points);
+    const latest = hourly[0] || [];
+    for(const p of latest){
+      const [lat, lon, val] = p;
+      const circle = L.circleMarker([lat,lon], {
+        radius: 5 + (isFinite(val)? Math.min(Math.max(val,2),22)-2: 0)/2,
+        color: '#000', weight: 1, fillColor: colorFor(val), fillOpacity: 0.9
+      }).addTo(layers.points);
 
-    // Attach popup with model comparison (fetch lazy on open)
-    circle.bindPopup(()=>{
-      const div = L.DomUtil.create('div');
-      div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured scalar: <b>${val!=null? val.toFixed(2):'?'}</b> m/s (assumed)<br/><em>Loading Open‑Meteo...</em>`;
-      getOpenMeteoWind(lat, lon, level).then(j=>{
-        // Use the latest hour in response
-        const times = j.hourly.time;
-        const u = j.hourly[`wind_u_${level}hPa`];
-        const v = j.hourly[`wind_v_${level}hPa`];
-        const idx = times.length-1;
-        if(u && v){
-          const uu = u[idx], vv = v[idx];
-          const spd = Math.hypot(uu, vv);
-          const err = (val!=null && isFinite(val))? (spd - val): null;
-          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/>Model @ ${level} hPa: <b>${spd.toFixed(2)} m/s</b><br/>Δ (model - measured): <b>${err!=null? err.toFixed(2):'n/a'} m/s</b>`;
-          // Draw arrow for u/v
-          const arr = arrow(lat, lon, uu, vv).addTo(layers.arrows);
-          circle.once('popupclose', ()=>{ layers.arrows.removeLayer(arr); });
-        } else {
-          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Model winds unavailable at ${level} hPa.</span>`;
-        }
-      }).catch(()=>{
-        div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Open‑Meteo fetch failed.</span>`;
+      circle.bindPopup(()=>{
+        const div = L.DomUtil.create('div');
+        div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured scalar: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><em>Loading Open‑Meteo…</em>`;
+        getOpenMeteoWind(lat, lon, level).then(j=>{
+          const u = j.hourly[`wind_u_${level}hPa`];
+          const v = j.hourly[`wind_v_${level}hPa`];
+          const idx = (j.hourly && j.hourly.time)? j.hourly.time.length-1 : -1;
+          if(u && v && idx>=0){
+            const uu = u[idx], vv = v[idx];
+            const spd = Math.hypot(uu, vv);
+            const err = (val!=null && isFinite(val))? (spd - val): null;
+            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/>Model @ ${level} hPa: <b>${spd.toFixed(2)} m/s</b><br/>Δ (model − measured): <b>${err!=null? err.toFixed(2):'n/a'} m/s</b>`;
+            const arr = arrow(lat, lon, uu, vv).addTo(layers.arrows);
+            circle.once('popupclose', ()=>{ layers.arrows.removeLayer(arr); });
+          } else {
+            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Model winds unavailable at ${level} hPa.</span>`;
+          }
+        }).catch(()=>{
+          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Open‑Meteo fetch failed.</span>`;
+        });
+        return div;
       });
-      return div;
-    });
+    }
+  }finally{
+    btn.disabled = false;
   }
-
-  document.getElementById('refresh').disabled = false;
 }
 
 // UI hooks
+const proxyStatus = document.getElementById('proxyStatus');
+function updateProxyStatus(ok, msg){
+  proxyStatus.textContent = msg;
+  proxyStatus.className = 'status mono' + (ok? '' : ' err');
+}
+
+// quick probe against hour 00 to reflect CORS/proxy state
+(async function probe(){
+  const testUrl = WB_BASE + '00.json';
+  try{
+    await robustFetchJson(testUrl);
+    updateProxyStatus(true, PROXY? 'using proxy' : 'direct');
+  }catch(e){
+    if(PROXY){
+      updateProxyStatus(false, 'proxy failed');
+    }else{
+      updateProxyStatus(false, 'CORS blocked');
+    }
+  }
+})();
+
 document.getElementById('refresh').addEventListener('click', refresh);
+
+// small helper to prompt and set ?proxy=
+const proxyHelp = document.getElementById('proxyHelp');
+proxyHelp.addEventListener('click', (e)=>{
+  e.preventDefault();
+  const cur = PROXY || '';
+  const val = prompt('Enter proxy base. Examples:\n  https://your-worker.example.com/?url=\n  https://your-proxy.example.com/\n  https://your-proxy.example.com/?', cur);
+  if(val==null) return;
+  const url = new URL(location.href);
+  if(val.trim()==='') url.searchParams.delete('proxy');
+  else url.searchParams.set('proxy', val.trim());
+  location.href = url.toString();
+});
+
 refresh();
 </script>
 
 <!--
-====================
-Quick Deploy Notes
-====================
-1) Static hosting (no proxy):
-   - Save this file as index.html and host on Vercel/Netlify/GitHub Pages/S3.
-   - If your browser is blocked by CORS when requesting https://a.windbornesystems.com, add a proxy param when opening the page:
-       https://your.site/index.html?proxy=https://your-proxy.example.com/
-
+Deploy notes
+1) Static hosting: host this file anywhere. If CORS blocks https://a.windbornesystems.com, add a proxy via the UI link or open with ?proxy=...
 2) Tiny CORS proxy (Cloudflare Worker):
-   - Deploy this Worker and set ?proxy=https://<your-worker-url>/?url=
-   ---- worker.js ----
    export default {
      async fetch(req) {
        const u = new URL(req.url);
@@ -253,25 +297,11 @@ Quick Deploy Notes
        const r = await fetch(target, {headers:{'User-Agent':'windborne-fusion/1.0'}});
        const hdr = new Headers(r.headers);
        hdr.set('access-control-allow-origin','*');
+       hdr.set('cache-control','no-store');
        return new Response(r.body, {status:r.status, headers:hdr});
      }
    }
-
-3) Why Open‑Meteo?
-   - Free, no API key, global winds via GFS/others with pressure-level u/v components.
-   - Lets us compare model winds to balloon‑inferred winds in real time and quantify errors.
-   - Docs: https://open-meteo.com/en/docs (pressure level variables and GFS API)
-
-4) What this app infers & shows
-   - Ingests last 24 hourly snapshots (00..23). Robust parser tolerates line‑delimited JSON and trailing commas.
-   - Reconstructs drift tracks via nearest‑neighbour matching across hours (no device IDs in payload).
-   - Visualizes latest positions (colored by measured scalar) and overlays model wind arrows at a chosen pressure level.
-   - Popups quantify model‑minus‑measurement at each point.
-
-5) Extensibility ideas
-   - Compute RMSE by region and highlight jet streams
-   - Add time slider to animate tracks
-   - If Windborne publishes IDs/altitudes, improve tracking and select pressure level per balloon dynamically.
+3) If you control a.windbornesystems.com, add Access-Control-Allow-Origin for your origin on 200/304/204/redirects to avoid needing a proxy.
 -->
 </body>
 </html>
