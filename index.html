@@ -138,7 +138,7 @@ async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
 
   const fetchOM = async (qs) => {
     const url = `${base}?${common}&${qs}`;
-    const res = await fetch(buildProxiedUrl(url), { cache:'no-store', credentials:'omit', mode:'cors' });
+    const res = await fetch((url), { cache:'no-store', credentials:'omit', mode:'cors' });
     if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
     return res.json();
   };
@@ -318,5 +318,6 @@ Notes
 -->
 </body>
 </html>
+
 
 
