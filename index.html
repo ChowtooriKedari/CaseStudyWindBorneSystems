@@ -1,9 +1,12 @@
+Here’s the full file with the proxy hard-coded and Open-Meteo fixed (uses `u_component_of_wind_*` / `v_component_of_wind_*`, with a speed+direction fallback). You can paste this as your `index.html`:
+
+```html
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Windborne Live + Open‑Meteo Wind Fusion</title>
+  <title>Windborne Live + Open-Meteo Wind Fusion</title>
   <link rel="preconnect" href="https://unpkg.com"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <style>
@@ -29,33 +32,31 @@
 <body>
 <div id="app">
   <div class="panel">
-    <h1>Windborne Constellation × Open‑Meteo (last 24h)</h1>
+    <h1>Windborne Constellation × Open-Meteo (last 24h)</h1>
     <div class="row">
       <label>Pressure level for model winds:</label>
       <select id="level">
         <option value="100">100 hPa (~16 km)</option>
-        <option value="150">150 hPa (~13 km)</option>
+        <option value="150" selected>150 hPa (~13 km)</option>
         <option value="200">200 hPa (~12 km)</option>
       </select>
       <button id="refresh" class="btn">Refresh</button>
       <span id="proxyStatus" class="status mono" title="CORS/proxy state">checking…</span>
-      <a id="proxyHelp" href="#" class="small">set proxy</a>
     </div>
     <div class="row">
       <span class="chip">Circle color = Windborne measured scalar (assumed wind speed, m/s)</span>
-      <span class="chip">Arrow = Open‑Meteo GFS wind @ chosen level</span>
+      <span class="chip">Arrow = Open-Meteo GFS wind @ chosen level</span>
     </div>
     <div class="legend">
       <div class="swatch" style="background:#74add1"></div>Low (≈2 m/s)
       <div class="swatch" style="background:#fee08b"></div>Medium
       <div class="swatch" style="background:#f46d43"></div>High (≈22 m/s)
     </div>
-    <div class="note">Open‑Meteo gives no‑key global winds with pressure‑level u/v components for quick model vs balloon comparisons.</div>
+    <div class="note">Open-Meteo gives no-key global winds with pressure-level components for quick model vs balloon comparisons.</div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    <b>Tips</b>: Click a balloon for measured vs model wind and 24h drift track. Use the dropdown to change model level. A proxy is only needed if your browser blocks <code>a.windbornesystems.com</code> by CORS.
-    <div class="note">Proxy URL forms supported: <span class="mono">https://worker.example.com/?url=</span>, <span class="mono">https://proxy.example.com/</span> (will append encoded URL), or any string containing <span class="mono">{url}</span> as a placeholder.</div>
+    <b>Tips</b>: Click a balloon for measured vs model wind and 24h drift track. Use the dropdown to change model level. The Windborne endpoint is fetched via a hard-coded CORS proxy.
   </div>
 </div>
 
@@ -64,8 +65,8 @@
 // --- Config ---
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
-const QS = new URLSearchParams(location.search);
-const PROXY = QS.get('proxy') || '';
+// Hard-coded proxy (Vercel function)
+const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
 
 // --- Proxy helpers ---
 function buildProxiedUrl(target){
@@ -107,7 +108,6 @@ function isCorsLikeError(err){
 
 // Robust JSON fetch with optional proxy fallback and strict no-credentials
 async function robustFetchJson(url){
-  // try direct first
   try{
     const res = await fetch(url, {cache:'no-store', credentials:'omit', mode:'cors'});
     if(!res.ok) throw new Error('HTTP '+res.status);
@@ -124,7 +124,8 @@ async function robustFetchJson(url){
     if(out.length) return out;
     throw new Error('Unparseable JSON');
   }catch(e){
-    if(PROXY && isCorsLikeError(e)){
+    // If we somehow tried direct and hit CORS, retry via proxy
+    if(PROXY && isCorsLikeError(e) && !url.startsWith(PROXY)){
       const proxied = buildProxiedUrl(url);
       const res = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
       if(!res.ok) throw new Error('Proxy HTTP '+res.status);
@@ -136,7 +137,7 @@ async function robustFetchJson(url){
 
 async function fetchSnapshot(h){
   const direct = WB_BASE + String(h).padStart(2,'0') + '.json';
-  const url = PROXY ? buildProxiedUrl(direct) : direct;
+  const url = PROXY ? buildProxiedUrl(direct) : direct; // always via proxy here
   return robustFetchJson(url);
 }
 
@@ -175,11 +176,35 @@ function buildTracks(hourlyPoints, maxJump=800e3){ // 800 km
   return tracks;
 }
 
+// ---- Open-Meteo helpers ----
 async function getOpenMeteoWind(lat, lon, level){
-  const url = `https://api.open-meteo.com/v1/gfs?latitude=${lat}&longitude=${lon}&hourly=wind_u_${level}hPa,wind_v_${level}hPa&past_days=1&forecast_days=1&timeformat=unixtime`;
-  const res = await fetch(url, {cache:'no-store', credentials:'omit'});
-  if(!res.ok) throw new Error('Open‑Meteo error');
-  return res.json();
+  const base = 'https://api.open-meteo.com/v1/gfs';
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
+
+  // Try direct u/v first
+  const uvVars = `hourly=u_component_of_wind_${level}hPa,v_component_of_wind_${level}hPa`;
+  let res = await fetch(`${base}?${common}&${uvVars}`, {cache:'no-store', credentials:'omit'});
+  if (res.ok) {
+    const j = await res.json();
+    const u = j.hourly?.[`u_component_of_wind_${level}hPa`];
+    const v = j.hourly?.[`v_component_of_wind_${level}hPa`];
+    if (u && v) return {kind:'uv', data:j};
+  }
+
+  // Fallback: speed + direction
+  const sdVars = `hourly=wind_speed_${level}hPa,wind_direction_${level}hPa`;
+  res = await fetch(`${base}?${common}&${sdVars}`, {cache:'no-store', credentials:'omit'});
+  if (!res.ok) throw new Error('Open-Meteo error');
+  const j = await res.json();
+  return {kind:'sd', data:j};
+}
+
+function uvFromSpeedDir(speed, dirDeg){
+  // Meteorological convention: direction is where the wind blows FROM
+  const r = dirDeg * Math.PI / 180;
+  const u = -speed * Math.sin(r); // +east
+  const v = -speed * Math.cos(r); // +north
+  return [u, v];
 }
 
 function arrow(lat, lon, u, v){
@@ -190,6 +215,7 @@ function arrow(lat, lon, u, v){
   return L.polyline([[lat, lon],[lat+dy*0.01, lon+dx*0.01]], {color:'#333', weight:2, opacity:0.8, pane:'overlayPane'});
 }
 
+// ---- Main refresh ----
 async function refresh(){
   const level = document.getElementById('level').value;
   const btn = document.getElementById('refresh');
@@ -219,23 +245,32 @@ async function refresh(){
 
       circle.bindPopup(()=>{
         const div = L.DomUtil.create('div');
-        div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured scalar: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><em>Loading Open‑Meteo…</em>`;
-        getOpenMeteoWind(lat, lon, level).then(j=>{
-          const u = j.hourly[`wind_u_${level}hPa`];
-          const v = j.hourly[`wind_v_${level}hPa`];
-          const idx = (j.hourly && j.hourly.time)? j.hourly.time.length-1 : -1;
-          if(u && v && idx>=0){
-            const uu = u[idx], vv = v[idx];
-            const spd = Math.hypot(uu, vv);
-            const err = (val!=null && isFinite(val))? (spd - val): null;
-            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/>Model @ ${level} hPa: <b>${spd.toFixed(2)} m/s</b><br/>Δ (model − measured): <b>${err!=null? err.toFixed(2):'n/a'} m/s</b>`;
+        div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured scalar: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><em>Loading Open-Meteo…</em>`;
+        getOpenMeteoWind(lat, lon, level).then(({kind, data})=>{
+          const times = data.hourly.time || [];
+          const idx = times.length - 1;
+
+          if (idx >= 0){
+            let uu, vv, spd;
+            if (kind === 'uv'){
+              uu = data.hourly[`u_component_of_wind_${level}hPa`][idx];
+              vv = data.hourly[`v_component_of_wind_${level}hPa`][idx];
+              spd = Math.hypot(uu, vv);
+            } else {
+              const ws = data.hourly[`wind_speed_${level}hPa`][idx];
+              const wd = data.hourly[`wind_direction_${level}hPa`][idx];
+              [uu, vv] = uvFromSpeedDir(ws, wd);
+              spd = ws;
+            }
+            const err = (val!=null && isFinite(val)) ? (spd - val) : null;
+            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/>Model @ ${level} hPa: <b>${spd.toFixed(2)}</b> m/s<br/>Δ (model − measured): <b>${err!=null? err.toFixed(2):'n/a'}</b> m/s`;
             const arr = arrow(lat, lon, uu, vv).addTo(layers.arrows);
             circle.once('popupclose', ()=>{ layers.arrows.removeLayer(arr); });
           } else {
-            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Model winds unavailable at ${level} hPa.</span>`;
+            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><span style="color:#a00">Model winds unavailable at ${level} hPa.</span>`;
           }
         }).catch(()=>{
-          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'} m/s</b><br/><span style='color:#a00'>Open‑Meteo fetch failed.</span>`;
+          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><span style='color:#a00'>Open-Meteo fetch failed.</span>`;
         });
         return div;
       });
@@ -252,56 +287,26 @@ function updateProxyStatus(ok, msg){
   proxyStatus.className = 'status mono' + (ok? '' : ' err');
 }
 
-// quick probe against hour 00 to reflect CORS/proxy state
+// quick probe via proxy to reflect state
 (async function probe(){
   const testUrl = WB_BASE + '00.json';
   try{
-    await robustFetchJson(testUrl);
-    updateProxyStatus(true, PROXY? 'using proxy' : 'direct');
+    await robustFetchJson(buildProxiedUrl(testUrl));
+    updateProxyStatus(true, 'using proxy');
   }catch(e){
-    if(PROXY){
-      updateProxyStatus(false, 'proxy failed');
-    }else{
-      updateProxyStatus(false, 'CORS blocked');
-    }
+    updateProxyStatus(false, 'proxy failed');
   }
 })();
 
 document.getElementById('refresh').addEventListener('click', refresh);
-
-// small helper to prompt and set ?proxy=
-const proxyHelp = document.getElementById('proxyHelp');
-proxyHelp.addEventListener('click', (e)=>{
-  e.preventDefault();
-  const cur = PROXY || '';
-  const val = prompt('Enter proxy base. Examples:\n  https://your-worker.example.com/?url=\n  https://your-proxy.example.com/\n  https://your-proxy.example.com/?', cur);
-  if(val==null) return;
-  const url = new URL(location.href);
-  if(val.trim()==='') url.searchParams.delete('proxy');
-  else url.searchParams.set('proxy', val.trim());
-  location.href = url.toString();
-});
-
 refresh();
 </script>
 
 <!--
 Deploy notes
-1) Static hosting: host this file anywhere. If CORS blocks https://a.windbornesystems.com, add a proxy via the UI link or open with ?proxy=...
-2) Tiny CORS proxy (Cloudflare Worker):
-   export default {
-     async fetch(req) {
-       const u = new URL(req.url);
-       const target = u.searchParams.get('url');
-       if(!target) return new Response('missing url', {status:400});
-       const r = await fetch(target, {headers:{'User-Agent':'windborne-fusion/1.0'}});
-       const hdr = new Headers(r.headers);
-       hdr.set('access-control-allow-origin','*');
-       hdr.set('cache-control','no-store');
-       return new Response(r.body, {status:r.status, headers:hdr});
-     }
-   }
-3) If you control a.windbornesystems.com, add Access-Control-Allow-Origin for your origin on 200/304/204/redirects to avoid needing a proxy.
+- This page hard-codes a Vercel proxy at https://proxy-fmd5.vercel.app/api/proxy?url=
+- If you control a.windbornesystems.com, adding Access-Control-Allow-Origin for your site would let you remove the proxy.
 -->
 </body>
 </html>
+```
