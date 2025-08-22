@@ -1,312 +1,279 @@
-Here’s the full file with the proxy hard-coded and Open-Meteo fixed (uses `u_component_of_wind_*` / `v_component_of_wind_*`, with a speed+direction fallback). You can paste this as your `index.html`:
-
-```html
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Windborne Live + Open-Meteo Wind Fusion</title>
+  <title>Windborne Constellation — 24h Animation (Proxy Only)</title>
   <link rel="preconnect" href="https://unpkg.com"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
     html,body,#app{height:100%;margin:0}
-    #map{height:100%;}
+    #map{height:100%}
     .panel{position:absolute;top:10px;left:10px;z-index:1000;background:#ffffffd9;padding:10px 12px;border-radius:12px;backdrop-filter:saturate(1.2) blur(6px);box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:520px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     .panel h1{margin:0 0 6px 0;font-size:16px}
-    .panel .row{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
-    .panel label{font-size:12px;color:#333}
+    .row{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+    .btn{padding:6px 10px;border-radius:8px;border:1px solid #ccd;background:#f7f7ff;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
     .chip{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef;border:1px solid #ccd;font-size:12px;margin-right:6px}
     .legend{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px}
     .legend .swatch{width:16px;height:10px;border-radius:3px;border:1px solid #0001}
-    .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
-    .btn{padding:6px 10px;border-radius:8px;border:1px solid #ccd;background:#f7f7ff;cursor:pointer}
-    .btn:active{transform:translateY(1px)}
-    .note{font-size:11px;color:#555;margin-top:6px}
     .status{padding:2px 8px;border-radius:999px;border:1px solid #ccd;background:#f5fff5;font-size:12px}
     .status.err{background:#fff5f5;border-color:#f3c0c0}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
-    a.small{font-size:11px}
+    .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
+    .lbl{background:#000a;color:#fff;padding:1px 4px;border-radius:4px;border:1px solid #0003;font-size:11px}
   </style>
 </head>
 <body>
 <div id="app">
   <div class="panel">
-    <h1>Windborne Constellation × Open-Meteo (last 24h)</h1>
+    <h1>Windborne — last 24h (animated)</h1>
     <div class="row">
-      <label>Pressure level for model winds:</label>
-      <select id="level">
-        <option value="100">100 hPa (~16 km)</option>
-        <option value="150" selected>150 hPa (~13 km)</option>
-        <option value="200">200 hPa (~12 km)</option>
-      </select>
-      <button id="refresh" class="btn">Refresh</button>
-      <span id="proxyStatus" class="status mono" title="CORS/proxy state">checking…</span>
+      <button id="refresh" class="btn">Refresh data</button>
+      <button id="toggle" class="btn">Pause</button>
+      <label class="mono">Frame: <span id="frameLabel">…</span></label>
+      <span id="proxyStatus" class="status mono">checking proxy…</span>
     </div>
     <div class="row">
-      <span class="chip">Circle color = Windborne measured scalar (assumed wind speed, m/s)</span>
-      <span class="chip">Arrow = Open-Meteo GFS wind @ chosen level</span>
+      <span class="chip">Dot = position at hour</span>
+      <span class="chip">Text = 3rd value from JSON</span>
+      <span class="chip">Gray line = inferred 24h track</span>
     </div>
     <div class="legend">
-      <div class="swatch" style="background:#74add1"></div>Low (≈2 m/s)
+      <div class="swatch" style="background:#74add1"></div>Low
       <div class="swatch" style="background:#fee08b"></div>Medium
-      <div class="swatch" style="background:#f46d43"></div>High (≈22 m/s)
+      <div class="swatch" style="background:#f46d43"></div>High
     </div>
-    <div class="note">Open-Meteo gives no-key global winds with pressure-level components for quick model vs balloon comparisons.</div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    <b>Tips</b>: Click a balloon for measured vs model wind and 24h drift track. Use the dropdown to change model level. The Windborne endpoint is fetched via a hard-coded CORS proxy.
+    Data: <code>a.windbornesystems.com/treasure/00..23.json</code> via hard-coded proxy.
+    Animation loops over the last 24 snapshots (23→0). Tracks are stitched by nearest-neighbour (IDs aren’t provided).
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
-// --- Config ---
+// ========== Config ==========
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
-// Hard-coded proxy (Vercel function)
+// Hard-coded proxy (Vercel): MUST accept ?url=<encoded>
 const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
 
-// --- Proxy helpers ---
+// ========== Proxy helper ==========
 function buildProxiedUrl(target){
-  if(!PROXY) return target;
   const p = PROXY.trim();
-  if(p.includes('{url}')) return p.replace('{url}', encodeURIComponent(target));
-  if(/[?&]url=$/.test(p) || /[?]$/.test(p)) return p + encodeURIComponent(target);
-  if(p.endsWith('/')) return p + encodeURIComponent(target);
+  if (!p) return target;
+  if (p.includes('{url}')) return p.replace('{url}', encodeURIComponent(target));
+  if (/[?&]url=$/.test(p) || /\?$/.test(p)) return p + encodeURIComponent(target);
+  if (p.endsWith('/')) return p + encodeURIComponent(target);
   return p + encodeURIComponent(target);
 }
 
-// --- Map setup ---
+// ========== Map ==========
 const map = L.map('map', {worldCopyJump:true}).setView([20,0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 7,
-  attribution: '&copy; OpenStreetMap contributors'
+  maxZoom: 7, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
 const layers = {
   points: L.layerGroup().addTo(map),
-  arrows: L.layerGroup().addTo(map),
+  labels: L.layerGroup().addTo(map),
   tracks: L.layerGroup().addTo(map)
 };
 
-// Simple color scale for measured speed-like value (2..22)
+// ========== Utils ==========
 function colorFor(v){
-  if(v==null||isNaN(v)) return '#999';
-  if(v<6) return '#74add1';
-  if(v<12) return '#abd9e9';
-  if(v<16) return '#fee08b';
-  if(v<20) return '#fdae61';
+  const n = Number(v);
+  if(!isFinite(n)) return '#999';
+  if(n<6) return '#74add1';
+  if(n<12) return '#abd9e9';
+  if(n<16) return '#fee08b';
+  if(n<20) return '#fdae61';
   return '#f46d43';
 }
 
-// Detect likely CORS/network error type
 function isCorsLikeError(err){
   return err && (err.name === 'TypeError' || /Failed to fetch|CORS|NetworkError/i.test(String(err)));
 }
 
-// Robust JSON fetch with optional proxy fallback and strict no-credentials
-async function robustFetchJson(url){
-  try{
-    const res = await fetch(url, {cache:'no-store', credentials:'omit', mode:'cors'});
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const text = await res.text();
-    try { return JSON.parse(text); } catch(_){ /* fallthrough */ }
-    const lines = text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
-    if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
-      try { return JSON.parse('['+lines.join(',')+']'); } catch(_){ }
-    }
-    const repaired = text.replace(/,(\s*[}\]])/g,'$1');
-    try { return JSON.parse(repaired); } catch(_){ }
-    const tripletRe = /\[\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*\]/g;
-    const out=[]; let m; while((m=tripletRe.exec(text))) out.push([+m[1],+m[2],+m[3]]);
-    if(out.length) return out;
-    throw new Error('Unparseable JSON');
-  }catch(e){
-    // If we somehow tried direct and hit CORS, retry via proxy
-    if(PROXY && isCorsLikeError(e) && !url.startsWith(PROXY)){
-      const proxied = buildProxiedUrl(url);
-      const res = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
-      if(!res.ok) throw new Error('Proxy HTTP '+res.status);
-      return res.json();
-    }
-    throw e;
+// Robust JSON parsing (array, JSONL, tolerant commas, or triplets [lat,lon,val])
+function parsePossiblyWeirdJson(text){
+  try { return JSON.parse(text); } catch(_){ /* continue */ }
+  const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
+  if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
+    try { return JSON.parse('['+lines.join(',')+']'); } catch(_){}
   }
+  const repaired = text.replace(/,(\s*[}\]])/g,'$1');
+  try { return JSON.parse(repaired); } catch(_){}
+  const tripletRe = /\[\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*\]/g;
+  const out=[]; let m; while((m=tripletRe.exec(text))) out.push([+m[1],+m[2],+m[3]]);
+  if(out.length) return out;
+  throw new Error('Unparseable JSON');
 }
 
-async function fetchSnapshot(h){
-  const direct = WB_BASE + String(h).padStart(2,'0') + '.json';
-  const url = PROXY ? buildProxiedUrl(direct) : direct; // always via proxy here
-  return robustFetchJson(url);
+// Always fetch via proxy (so browsers aren’t blocked by CORS)
+async function fetchJsonViaProxy(url){
+  const proxied = buildProxiedUrl(url);
+  const res = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
+  if(!res.ok) throw new Error('Proxy HTTP '+res.status);
+  const text = await res.text();
+  return parsePossiblyWeirdJson(text);
 }
 
 function haversine(a,b){
-  const R=6371e3; // meters
-  const toRad = d=>d*Math.PI/180;
-  const dLat=toRad(b[0]-a[0]);
-  const dLon=toRad(b[1]-a[1]);
+  const R=6371e3, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(b[0]-a[0]), dLon=toRad(b[1]-a[1]);
   const s1=Math.sin(dLat/2), s2=Math.sin(dLon/2);
   const aa=s1*s1 + Math.cos(toRad(a[0]))*Math.cos(toRad(b[0]))*s2*s2;
   return 2*R*Math.asin(Math.sqrt(aa));
 }
 
-// Link points across hours into tracks by nearest-neighbour (greedy)
-function buildTracks(hourlyPoints, maxJump=800e3){ // 800 km
+// Stitch tracks across hours using greedy nearest-neighbour
+function buildTracks(hourlyPoints, maxJump=800e3){
   const tracks=[];
   for(let h=hourlyPoints.length-1; h>=0; h--){
     const pts = hourlyPoints[h] || [];
-    const assigned = new Array(pts.length).fill(false);
+    const used = new Array(pts.length).fill(false);
     for(const tr of tracks){
-      let bestIdx=-1, bestD=Infinity;
-      for(let i=0;i<pts.length;i++) if(!assigned[i]){
+      let best=-1, bestD=Infinity;
+      for(let i=0;i<pts.length;i++) if(!used[i]){
         const d = haversine(tr.last, [pts[i][0], pts[i][1]]);
-        if(d<bestD){ bestD=d; bestIdx=i; }
+        if(d<bestD){ bestD=d; best=i; }
       }
-      if(bestIdx>=0 && bestD<=maxJump){
-        const p=pts[bestIdx]; assigned[bestIdx]=true; tr.pts.push({lat:p[0],lon:p[1],val:p[2],h}); tr.last=[p[0],p[1]];
+      if(best>=0 && bestD<=maxJump){
+        const p=pts[best]; used[best]=true;
+        tr.pts.push({lat:p[0],lon:p[1],val:p[2],h});
+        tr.last=[p[0],p[1]];
       }
     }
-    for(let i=0;i<pts.length;i++) if(!assigned[i]){
+    for(let i=0;i<pts.length;i++) if(!used[i]){
       const p=pts[i];
       tracks.push({pts:[{lat:p[0],lon:p[1],val:p[2],h}], last:[p[0],p[1]]});
     }
   }
-  for(const tr of tracks){ tr.pts.sort((a,b)=>a.h-b.h); }
+  for(const tr of tracks) tr.pts.sort((a,b)=>a.h-b.h);
   return tracks;
 }
 
-// ---- Open-Meteo helpers ----
-async function getOpenMeteoWind(lat, lon, level){
-  const base = 'https://api.open-meteo.com/v1/gfs';
-  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
+// ========== Data + Animation ==========
+let hourly = [];       // [24][N] of [lat,lon,val]
+let tracks = [];       // inferred tracks
+let frameOrder = [];   // 23 -> 0
+let timer = null;
+let playing = true;
+let frameIdx = 0;
 
-  // Try direct u/v first
-  const uvVars = `hourly=u_component_of_wind_${level}hPa,v_component_of_wind_${level}hPa`;
-  let res = await fetch(`${base}?${common}&${uvVars}`, {cache:'no-store', credentials:'omit'});
-  if (res.ok) {
-    const j = await res.json();
-    const u = j.hourly?.[`u_component_of_wind_${level}hPa`];
-    const v = j.hourly?.[`v_component_of_wind_${level}hPa`];
-    if (u && v) return {kind:'uv', data:j};
-  }
-
-  // Fallback: speed + direction
-  const sdVars = `hourly=wind_speed_${level}hPa,wind_direction_${level}hPa`;
-  res = await fetch(`${base}?${common}&${sdVars}`, {cache:'no-store', credentials:'omit'});
-  if (!res.ok) throw new Error('Open-Meteo error');
-  const j = await res.json();
-  return {kind:'sd', data:j};
-}
-
-function uvFromSpeedDir(speed, dirDeg){
-  // Meteorological convention: direction is where the wind blows FROM
-  const r = dirDeg * Math.PI / 180;
-  const u = -speed * Math.sin(r); // +east
-  const v = -speed * Math.cos(r); // +north
-  return [u, v];
-}
-
-function arrow(lat, lon, u, v){
-  const speed = Math.hypot(u, v);
-  const dir = Math.atan2(u, v);
-  const len = Math.min(1.5 + speed*0.05, 3.5);
-  const dx = Math.sin(dir)*len; const dy = Math.cos(dir)*len;
-  return L.polyline([[lat, lon],[lat+dy*0.01, lon+dx*0.01]], {color:'#333', weight:2, opacity:0.8, pane:'overlayPane'});
-}
-
-// ---- Main refresh ----
-async function refresh(){
-  const level = document.getElementById('level').value;
-  const btn = document.getElementById('refresh');
-  btn.disabled = true;
-  layers.points.clearLayers(); layers.tracks.clearLayers(); layers.arrows.clearLayers();
-
-  try{
-    const snaps = await Promise.all(Array.from({length:SNAP_MAX}, (_,i)=>
-      fetchSnapshot(i).catch(()=>[])
-    ));
-    const hourly = snaps.map(arr => Array.isArray(arr)? arr.filter(t=>Array.isArray(t) && t.length>=2): []);
-    const tracks = buildTracks(hourly);
-
-    for(const tr of tracks){
-      if(tr.pts.length<2) continue;
-      const coords = tr.pts.map(p=>[p.lat, p.lon]);
-      L.polyline(coords, {color:'#888', weight:2, opacity:0.6}).addTo(layers.tracks);
-    }
-
-    const latest = hourly[0] || [];
-    for(const p of latest){
-      const [lat, lon, val] = p;
-      const circle = L.circleMarker([lat,lon], {
-        radius: 5 + (isFinite(val)? Math.min(Math.max(val,2),22)-2: 0)/2,
-        color: '#000', weight: 1, fillColor: colorFor(val), fillOpacity: 0.9
-      }).addTo(layers.points);
-
-      circle.bindPopup(()=>{
-        const div = L.DomUtil.create('div');
-        div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured scalar: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><em>Loading Open-Meteo…</em>`;
-        getOpenMeteoWind(lat, lon, level).then(({kind, data})=>{
-          const times = data.hourly.time || [];
-          const idx = times.length - 1;
-
-          if (idx >= 0){
-            let uu, vv, spd;
-            if (kind === 'uv'){
-              uu = data.hourly[`u_component_of_wind_${level}hPa`][idx];
-              vv = data.hourly[`v_component_of_wind_${level}hPa`][idx];
-              spd = Math.hypot(uu, vv);
-            } else {
-              const ws = data.hourly[`wind_speed_${level}hPa`][idx];
-              const wd = data.hourly[`wind_direction_${level}hPa`][idx];
-              [uu, vv] = uvFromSpeedDir(ws, wd);
-              spd = ws;
-            }
-            const err = (val!=null && isFinite(val)) ? (spd - val) : null;
-            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/>Model @ ${level} hPa: <b>${spd.toFixed(2)}</b> m/s<br/>Δ (model − measured): <b>${err!=null? err.toFixed(2):'n/a'}</b> m/s`;
-            const arr = arrow(lat, lon, uu, vv).addTo(layers.arrows);
-            circle.once('popupclose', ()=>{ layers.arrows.removeLayer(arr); });
-          } else {
-            div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><span style="color:#a00">Model winds unavailable at ${level} hPa.</span>`;
-          }
-        }).catch(()=>{
-          div.innerHTML = `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>Measured: <b>${val!=null? val.toFixed(2):'?'}</b> m/s<br/><span style='color:#a00'>Open-Meteo fetch failed.</span>`;
-        });
-        return div;
-      });
-    }
-  }finally{
-    btn.disabled = false;
-  }
-}
-
-// UI hooks
+const frameLabel = document.getElementById('frameLabel');
 const proxyStatus = document.getElementById('proxyStatus');
-function updateProxyStatus(ok, msg){
+
+function setProxyStatus(ok, msg){
   proxyStatus.textContent = msg;
   proxyStatus.className = 'status mono' + (ok? '' : ' err');
 }
 
-// quick probe via proxy to reflect state
-(async function probe(){
-  const testUrl = WB_BASE + '00.json';
+async function loadAll(){
+  // probe proxy quickly
   try{
-    await robustFetchJson(buildProxiedUrl(testUrl));
-    updateProxyStatus(true, 'using proxy');
-  }catch(e){
-    updateProxyStatus(false, 'proxy failed');
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    setProxyStatus(true, 'proxy OK');
+  }catch(_){
+    setProxyStatus(false, 'proxy unreachable');
   }
-})();
 
-document.getElementById('refresh').addEventListener('click', refresh);
-refresh();
+  const snaps = await Promise.all(
+    Array.from({length:SNAP_MAX}, (_,i)=> {
+      const url = WB_BASE + String(i).padStart(2,'0') + '.json';
+      return fetchJsonViaProxy(url).catch(()=>[]);
+    })
+  );
+
+  hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
+  tracks = buildTracks(hourly);
+  frameOrder = Array.from({length:SNAP_MAX}, (_,i)=>SNAP_MAX-1-i); // 23..0
+}
+
+function drawTracks(){
+  layers.tracks.clearLayers();
+  for(const tr of tracks){
+    if(tr.pts.length<2) continue;
+    const coords = tr.pts.map(p=>[p.lat, p.lon]);
+    L.polyline(coords, {color:'#888', weight:2, opacity:0.6}).addTo(layers.tracks);
+  }
+}
+
+function drawFrame(hourIndex){
+  layers.points.clearLayers();
+  layers.labels.clearLayers();
+
+  const pts = hourly[hourIndex] || [];
+  for(const p of pts){
+    const [lat, lon, val] = p;
+    const vnum = Number(val);
+    const circle = L.circleMarker([lat,lon], {
+      radius: 5 + (isFinite(vnum)? Math.min(Math.max(vnum,2),22)-2: 0)/2,
+      color: '#000', weight: 1, fillColor: colorFor(vnum), fillOpacity: 0.9
+    }).addTo(layers.points);
+
+    // Permanent tooltip showing the 3rd value as-is (rounded if numeric)
+    const txt = isFinite(vnum) ? vnum.toFixed(2) : String(val);
+    circle.bindTooltip(`<span class="lbl">${txt}</span>`, {permanent:true, direction:'top', offset:[0,-8], opacity:1}).openTooltip();
+  }
+
+  // Label text
+  frameLabel.textContent = String(hourIndex).padStart(2,'0') + ' (00=now)';
+}
+
+function step(){
+  frameIdx = (frameIdx + 1) % frameOrder.length;
+  drawFrame(frameOrder[frameIdx]);
+}
+
+function start(){
+  if(timer) return;
+  timer = setInterval(step, 1200); // 1.2s per frame; loops forever
+}
+
+function stop(){
+  if(!timer) return;
+  clearInterval(timer);
+  timer = null;
+}
+
+// ========== UI ==========
+document.getElementById('refresh').addEventListener('click', async ()=>{
+  stop();
+  playing = true;
+  document.getElementById('toggle').textContent = 'Pause';
+  frameLabel.textContent = '…';
+  await loadAll();
+  drawTracks();
+  frameIdx = -1; // so first step shows 23
+  step();
+  start();
+});
+
+document.getElementById('toggle').addEventListener('click', ()=>{
+  playing = !playing;
+  if(playing){ start(); } else { stop(); }
+  document.getElementById('toggle').textContent = playing ? 'Pause' : 'Play';
+});
+
+// ========== Boot ==========
+(async function init(){
+  await loadAll();
+  drawTracks();
+  frameIdx = -1;
+  step(); // draw first frame
+  start(); // begin looping
+})();
 </script>
 
 <!--
-Deploy notes
-- This page hard-codes a Vercel proxy at https://proxy-fmd5.vercel.app/api/proxy?url=
-- If you control a.windbornesystems.com, adding Access-Control-Allow-Origin for your site would let you remove the proxy.
+Notes
+- Uses ONLY WindBorne 00..23.json (no external model).
+- Always fetches via hard-coded Vercel proxy (?url=).
+- Tracks are inferred because the API doesn’t expose balloon IDs.
 -->
 </body>
 </html>
-```
