@@ -20,7 +20,7 @@
     .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
 
     .leaflet-div-icon{background:transparent;border:none}
-    .wb{display:inline-flex;align-items:center;gap:8px;pointer-events:none}
+    .wb{display:inline-flex;align-items:center;gap:8px;/* allow clicks */ pointer-events:auto}
     .wb-dot{
       position:relative; width:14px; height:14px; border-radius:50%;
       background:
@@ -60,7 +60,7 @@
     </div>
     <div class="row mono" style="font-size:12px">
       Data via hard-coded proxy. (https://proxy-fmd5.vercel.app/api/proxy?url=)
-      Label shows <strong>third JSON value × 100 (truncated)</strong>.
+      Label shows <strong>third JSON value × 100 (truncated)</strong>. Click a marker for model wind &amp; Δ from Open-Meteo @ 150 hPa.
     </div>
   </div>
   <div id="map"></div>
@@ -71,13 +71,13 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
-
+// ========= Config =========
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
-// Hard-coded proxy (?url= form)
-const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
+const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url='; // Hard-coded proxy
+const LEVEL_HPA = 150; // model pressure level for comparisons
 
-
+// ========= Proxy helper =========
 function buildProxiedUrl(target){
   const p = PROXY.trim();
   if (!p) return target;
@@ -93,7 +93,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 7, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
-// ========= Robust fetch/parse =========
+// ========= Robust fetch/parse (Windborne) =========
 function parsePossiblyWeirdJson(text){
   try { return JSON.parse(text); } catch(_){}
   const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
@@ -115,19 +115,56 @@ async function fetchJsonViaProxy(url){
   return parsePossiblyWeirdJson(text);
 }
 
-// ========= Uniform marker factory (value ×100, decimals removed) =========
+// ========= Uniform marker (label = third value ×100, truncated) =========
 function makeIcon(val){
   let txt = '?';
   const n = Number(val);
-  if (Number.isFinite(n)) {
-    txt = String(Math.trunc(n * 100));
-  }
+  if (Number.isFinite(n)) txt = String(Math.trunc(n * 100));
   return L.divIcon({
     className: 'wb-icon',
     html: `<div class="wb"><span class="wb-dot"></span><span class="wb-val">${txt}</span></div>`,
     iconSize: [1,1],
     iconAnchor: [7,9]
   });
+}
+
+// ========= Open-Meteo (model wind) =========
+async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
+  const base = 'https://api.open-meteo.com/v1/gfs';
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
+  // Try u/v first
+  let res = await fetch(`${base}?${common}&hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`, {cache:'no-store', credentials:'omit'});
+  if (!res.ok) throw new Error('Open-Meteo error');
+  let j = await res.json();
+  let times = (j.hourly && j.hourly.time) || [];
+  // Target unix timestamp for this frame's hour (nearest clock hour)
+  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600;
+  let idx = 0, best = Infinity;
+  for(let i=0;i<times.length;i++){
+    const d = Math.abs(times[i]-target);
+    if(d<best){best=d; idx=i;}
+  }
+  let u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[idx];
+  let v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[idx];
+
+  if (typeof u === 'number' && typeof v === 'number') {
+    return { speed: Math.hypot(u, v), src: 'uv' };
+  }
+
+  // Fallback: speed + direction
+  res = await fetch(`${base}?${common}&hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`, {cache:'no-store', credentials:'omit'});
+  if (!res.ok) throw new Error('Open-Meteo error');
+  j = await res.json();
+  times = (j.hourly && j.hourly.time) || [];
+  // recompute idx on fallback
+  idx = 0; best = Infinity;
+  for(let i=0;i<times.length;i++){
+    const d = Math.abs(times[i]-target);
+    if(d<best){best=d; idx=i;}
+  }
+  const ws = j.hourly?.[`wind_speed_${levelHpa}hPa`]?.[idx];
+  if (typeof ws === 'number') return { speed: ws, src: 'ws' };
+  throw new Error('Open-Meteo data unavailable');
 }
 
 // ========= Data & prebuilt layers =========
@@ -143,13 +180,30 @@ async function buildHourlyLayers(){
     })
   );
   hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
+
   for(let h=0; h<SNAP_MAX; h++){
     if(hourLayers[h]) { hourLayers[h].remove(); hourLayers[h] = null; }
     const layer = L.layerGroup();
     const pts = hourly[h] || [];
     for(const p of pts){
       const [lat, lon, val] = p;
-      const marker = L.marker([lat, lon], { icon: makeIcon(val), interactive:false });
+      const marker = L.marker([lat, lon], { icon: makeIcon(val), interactive:true });
+
+      // Bind on-demand comparison popup (keeps animation silky; no arrows/lines)
+      marker.bindPopup(() => {
+        const div = L.DomUtil.create('div');
+        const labelVal = Number.isFinite(+val) ? (+val).toFixed(3) : '?';
+        div.innerHTML = `<b>Balloon</b><br/>Value (raw third): <b>${labelVal}</b><br/><em>Fetching model @ ${LEVEL_HPA} hPa…</em>`;
+        getOpenMeteoSpeed(lat, lon, LEVEL_HPA, h).then(({speed})=>{
+          const measured = Number(val);
+          const delta = Number.isFinite(measured) ? (speed - measured) : null;
+          div.innerHTML = `<b>Balloon</b><br/>Value (raw third): <b>${labelVal}</b><br/>Model @ ${LEVEL_HPA} hPa: <b>${speed.toFixed(2)}</b> m/s<br/>Δ (model − value): <b>${delta!=null? delta.toFixed(2):'n/a'}</b>`;
+        }).catch(()=>{
+          div.innerHTML = `<b>Balloon</b><br/>Value (raw third): <b>${labelVal}</b><br/><span style="color:#a00">Model fetch failed.</span>`;
+        });
+        return div;
+      });
+
       layer.addLayer(marker);
     }
     hourLayers[h] = layer;
@@ -164,7 +218,7 @@ let frameIdx = -1;
 let playing = true;
 let rafId = null;
 let lastTick = 0;
-const FRAME_MS = 900; // adjust playback speed here
+const FRAME_MS = 700; // faster & smooth; change if you want
 
 function setProxyStatus(ok, msg){
   proxyStatus.textContent = msg;
@@ -235,6 +289,7 @@ Notes
 - Hard-coded proxy: https://proxy-fmd5.vercel.app/api/proxy?url=
 - Uniform glossy pin icon + value pill (third JSON value ×100, truncated).
 - No trajectory lines. Prebuilt 24 LayerGroups; animation swaps layers to avoid jank.
+- Combination: On click, we query Open-Meteo GFS winds @ 150 hPa for that point & hour and show model speed + Δ (model − value).
 -->
 </body>
 </html>
