@@ -20,9 +20,9 @@
     .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
 
     .leaflet-div-icon{background:transparent;border:none}
-    .leaflet-marker-icon{cursor:pointer} /* make markers feel clickable */
+    .leaflet-marker-icon{cursor:pointer}
 
-    /* removed pointer-events:none so clicks on the label/pill open the popup */
+    /* label is clickable (no pointer-events:none) */
     .wb{display:inline-flex;align-items:center;gap:8px}
     .wb-dot{
       position:relative; width:14px; height:14px; border-radius:50%;
@@ -30,19 +30,14 @@
         radial-gradient( circle at 35% 35%, #ffffffaa 0 28%, transparent 29% ),
         linear-gradient(135deg,#7dd3fc 0%, #38bdf8 40%, #2563eb 75%, #1e3a8a 100%);
       border:1px solid #0b3e9a;
-      box-shadow:
-        0 0 0 1.5px #fff,
-        0 8px 16px rgba(0,0,0,.18);
+      box-shadow:0 0 0 1.5px #fff, 0 8px 16px rgba(0,0,0,.18);
     }
-    .wb-dot::before{
-      content:""; position:absolute; inset:-6px; border-radius:50%;
-      background:radial-gradient(circle,#fff6 0 45%, transparent 60%);
-    }
+    .wb-dot::before{content:""; position:absolute; inset:-6px; border-radius:50%;
+      background:radial-gradient(circle,#fff6 0 45%, transparent 60%)}
     .wb-dot::after{
       content:""; position:absolute; left:50%; bottom:-4px; width:6px; height:6px;
       transform:translateX(-50%) rotate(45deg);
-      background:#1e3a8a; border:1px solid #0b3e9a; border-radius:1px;
-      box-shadow:0 0 0 1px #fff inset;
+      background:#1e3a8a; border:1px solid #0b3e9a; border-radius:1px; box-shadow:0 0 0 1px #fff inset;
     }
     .wb-val{
       font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:#111;
@@ -62,13 +57,13 @@
       <span id="proxyStatus" class="status mono">checking proxy…</span>
     </div>
     <div class="row mono" style="font-size:12px">
-      Data via hard-coded proxy. (https://proxy-fmd5.vercel.app/api/proxy?url=)
+      Data via hard-coded proxy. (https://proxy-fmd5.vercel.app/api/proxy?url=)<br/>
       Label shows <strong>third JSON value × 100 (truncated)</strong>.
     </div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    Tip: 00 = most recent hour. Animation loops 23 → 0. Layers are prebuilt for smooth frames.
+    Tip: 00 = most recent hour. Animation loops 23 → 0. Popups persist across frames and update live.
   </div>
 </div>
 
@@ -90,8 +85,8 @@ function buildProxiedUrl(target){
   return p + encodeURIComponent(target);
 }
 
-/* ========= Map ========= */
-const map = L.map('map', {worldCopyJump:true}).setView([20,0], 2);
+/* ========= Map (keep popups on map clicks) ========= */
+const map = L.map('map', {worldCopyJump:true, closePopupOnClick:false}).setView([20,0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 7, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
@@ -131,10 +126,10 @@ function makeIcon(val){
   });
 }
 
-/* ========= Open-Meteo (via proxy) for popup comparisons ========= */
+/* ========= Open-Meteo (direct) for popup comparisons ========= */
 async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
   const base = 'https://api.open-meteo.com/v1/gfs';
-  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1`;
 
   const fetchOM = async (qs) => {
     const url = `${base}?${common}&${qs}`;
@@ -143,30 +138,36 @@ async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
     return res.json();
   };
 
-  // Target unix hour for the current point in the animation
-  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600;
-
+  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600; // unix seconds
+  const parseTime = (t) => (typeof t === 'number') ? t : (Number.isFinite(new Date(t).getTime()) ? Math.floor(new Date(t).getTime()/1000) : NaN);
   const nearestIdx = (times) => {
     let best = Infinity, idx = 0;
     for (let i=0;i<times.length;i++){
-      const t = typeof times[i] === 'number' ? times[i] : Math.floor(new Date(times[i]).getTime()/1000);
-      const d = Math.abs(t - target);
+      const tt = parseTime(times[i]);
+      const d = Math.abs(tt - target);
       if (Number.isFinite(d) && d < best){ best = d; idx = i; }
     }
     return idx;
   };
 
-  // ✅ ask GFS for pressure-level wind speed (and direction if you want to display it)
-  const j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
-  const times = j.hourly?.time || [];
-  if (!times.length) throw new Error('Open-Meteo data unavailable');
-
-  const i   = nearestIdx(times);
-  const ws  = j.hourly[`wind_speed_${levelHpa}hPa`][i];
-  if (typeof ws !== 'number') throw new Error('Open-Meteo data unavailable');
-  return { speed: ws, src: 'ws' };
+  // Try u/v first, then speed fallback
+  let j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
+  let times = j.hourly?.time || [];
+  if (times.length){
+    const i = nearestIdx(times);
+    const u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[i];
+    const v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[i];
+    if (typeof u === 'number' && typeof v === 'number') return { speed: Math.hypot(u, v), src: 'uv' };
+  }
+  j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
+  times = j.hourly?.time || [];
+  if (times.length){
+    const i = nearestIdx(times);
+    const ws = j.hourly?.[`wind_speed_${levelHpa}hPa`]?.[i];
+    if (typeof ws === 'number') return { speed: ws, src: 'ws' };
+  }
+  throw new Error('Open-Meteo data unavailable');
 }
-
 
 /* ========= Data & prebuilt layers ========= */
 let hourly = [];                                  // [24][N] of [lat,lon,val]
@@ -181,6 +182,7 @@ async function buildHourlyLayers(){
     })
   );
   hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
+
   for(let h=0; h<SNAP_MAX; h++){
     if(hourLayers[h]) { hourLayers[h].remove(); hourLayers[h] = null; }
     const layer = L.layerGroup();
@@ -188,38 +190,72 @@ async function buildHourlyLayers(){
     for(const p of pts){
       const [lat, lon, val] = p;
       const marker = L.marker([lat, lon], { icon: makeIcon(val) });
+      // Click opens the persistent popup anchored at this point
+      marker.on('click', () => openPersistentPopup(lat, lon, h));
+      layer.addLayer(marker);
+    }
+    hourLayers[h] = layer;
+  }
+}
 
-marker.bindPopup(() => {
+/* ========= Persistent popup that survives frame changes ========= */
+const persistentPopup = L.popup({ autoClose:false, closeOnClick:false, closeButton:true });
+let selected = null; // {lat, lon} anchor (we'll snap to nearest per-frame)
+
+function nearestPoint(points, lat, lon){
+  if(!points || !points.length) return null;
+  let best=null, bestD=Infinity;
+  for(const p of points){
+    const d = (p[0]-lat)*(p[0]-lat) + (p[1]-lon)*(p[1]-lon);
+    if(d < bestD){ bestD = d; best = p; }
+  }
+  return best; // [lat, lon, val]
+}
+
+function updatePersistentPopupForHour(hour){
+  if(!selected) return;
+  const pts = hourly[hour] || [];
+  const np = nearestPoint(pts, selected.lat, selected.lon);
+  if(!np){
+    // keep position but tell user no point in this frame
+    persistentPopup.setContent('<i>No nearby balloon at this frame.</i>');
+    return;
+  }
+  const [plat, plon, pval] = np;
+  selected.lat = plat; selected.lon = plon; // snap to current nearest
+  const valTxt = Number.isFinite(+pval) ? (+pval).toFixed(2) : '?';
+
   const div = document.createElement('div');
-  const valTxt = Number.isFinite(+val) ? (+val).toFixed(2) : '?';
   div.innerHTML =
-    `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+    `<b>Balloon @ ${plat.toFixed(3)}, ${plon.toFixed(3)}</b><br/>` +
     `Third JSON value: <b>${valTxt}</b><br/>` +
     `<em>Loading model @ ${MODEL_HPA} hPa…</em>`;
-  getOpenMeteoSpeed(lat, lon, MODEL_HPA, h)
+
+  persistentPopup.setLatLng([plat, plon]).setContent(div);
+  persistentPopup.openOn(map);
+
+  getOpenMeteoSpeed(plat, plon, MODEL_HPA, hour)
     .then(({speed})=>{
-      const delta = Number.isFinite(+val) ? (speed - (+val)) : null;
+      const delta = Number.isFinite(+pval) ? (speed - (+pval)) : null;
       div.innerHTML =
-        `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+        `<b>Balloon @ ${plat.toFixed(3)}, ${plon.toFixed(3)}</b><br/>` +
         `Third JSON value: <b>${valTxt}</b><br/>` +
         `Model speed @ ${MODEL_HPA} hPa: <b>${speed.toFixed(2)}</b><br/>` +
         `Δ (model − value3): <b>${delta!=null ? delta.toFixed(2) : 'n/a'}</b>`;
     })
     .catch(()=>{
       div.innerHTML =
-        `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+        `<b>Balloon @ ${plat.toFixed(3)}, ${plon.toFixed(3)}</b><br/>` +
         `Third JSON value: <b>${valTxt}</b><br/>` +
         `<span style="color:#a00">Model fetch failed.</span>`;
     });
-  return div;
-}, { autoClose:false, closeOnClick:false, closeButton:true });
-
-
-      layer.addLayer(marker);
-    }
-    hourLayers[h] = layer;
-  }
 }
+
+function openPersistentPopup(lat, lon, hour){
+  selected = { lat, lon };
+  updatePersistentPopupForHour(hour);
+}
+map.on('popupclose', (e)=>{ if(e.popup === persistentPopup) selected = null; });
 
 /* ========= Animation (layer swapping) ========= */
 const frameLabel = document.getElementById('frameLabel');
@@ -242,6 +278,11 @@ function showFrame(idx){
   currLayer = hourLayers[hour];
   if(currLayer) currLayer.addTo(map);
   frameLabel.textContent = String(hour).padStart(2,'0') + ' (00=now)';
+
+  // keep popup open & refreshed across frames
+  if (selected && persistentPopup && !persistentPopup._closed) {
+    updatePersistentPopupForHour(hour);
+  }
 }
 
 function tick(ts){
@@ -296,16 +337,12 @@ document.getElementById('refresh').addEventListener('click', async ()=>{
 
 <!--
 Notes
-- Hard-coded proxy: https://proxy-fmd5.vercel.app/api/proxy?url=
+- Hard-coded proxy for Windborne: https://proxy-fmd5.vercel.app/api/proxy?url=
 - Uniform glossy pin icon + value pill (third JSON value ×100, truncated).
 - No trajectory lines. Prebuilt 24 LayerGroups; animation swaps layers to avoid jank.
-- External dataset: Open-Meteo GFS is used because it’s free, global, and provides pressure-level winds,
-  letting us compare model wind to the balloons at similar altitudes, live, without API keys.
+- Popups persist across frames: a single, map-level popup is used and refreshed on each frame.
+- External dataset: Open-Meteo GFS is used because it’s free, global, and provides pressure-level winds
+  so we can compare model wind to the balloons at similar altitudes, live, without API keys.
 -->
 </body>
 </html>
-
-
-
-
-
