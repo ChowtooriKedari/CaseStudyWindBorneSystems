@@ -189,30 +189,31 @@ async function buildHourlyLayers(){
       const [lat, lon, val] = p;
       const marker = L.marker([lat, lon], { icon: makeIcon(val) });
 
-      marker.bindPopup(() => {
-        const div = document.createElement('div');
-        const valTxt = Number.isFinite(+val) ? (+val).toFixed(2) : '?';
-        div.innerHTML =
-          `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
-          `Third JSON value: <b>${valTxt}</b><br/>` +
-          `<em>Loading model @ ${MODEL_HPA} hPa…</em>`;
-        getOpenMeteoSpeed(lat, lon, MODEL_HPA, h)
-          .then(({speed})=>{
-            const delta = Number.isFinite(+val) ? (speed - (+val)) : null;
-            div.innerHTML =
-              `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
-              `Third JSON value: <b>${valTxt}</b><br/>` +
-              `Model speed @ ${MODEL_HPA} hPa: <b>${speed.toFixed(2)}</b><br/>` +
-              `Δ (model − value3): <b>${delta!=null ? delta.toFixed(2) : 'n/a'}</b>`;
-          })
-          .catch(()=>{
-            div.innerHTML =
-              `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
-              `Third JSON value: <b>${valTxt}</b><br/>` +
-              `<span style="color:#a00">Model fetch failed.</span>`;
-          });
-        return div;
-      });
+marker.bindPopup(() => {
+  const div = document.createElement('div');
+  const valTxt = Number.isFinite(+val) ? (+val).toFixed(2) : '?';
+  div.innerHTML =
+    `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+    `Third JSON value: <b>${valTxt}</b><br/>` +
+    `<em>Loading model @ ${MODEL_HPA} hPa…</em>`;
+  getOpenMeteoSpeed(lat, lon, MODEL_HPA, h)
+    .then(({speed})=>{
+      const delta = Number.isFinite(+val) ? (speed - (+val)) : null;
+      div.innerHTML =
+        `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+        `Third JSON value: <b>${valTxt}</b><br/>` +
+        `Model speed @ ${MODEL_HPA} hPa: <b>${speed.toFixed(2)}</b><br/>` +
+        `Δ (model − value3): <b>${delta!=null ? delta.toFixed(2) : 'n/a'}</b>`;
+    })
+    .catch(()=>{
+      div.innerHTML =
+        `<b>Balloon @ ${lat.toFixed(3)}, ${lon.toFixed(3)}</b><br/>` +
+        `Third JSON value: <b>${valTxt}</b><br/>` +
+        `<span style="color:#a00">Model fetch failed.</span>`;
+    });
+  return div;
+}, { autoClose:false, closeOnClick:false, closeButton:true });
+
 
       layer.addLayer(marker);
     }
@@ -303,6 +304,7 @@ Notes
 -->
 </body>
 </html>
+
 
 
 
