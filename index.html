@@ -112,7 +112,7 @@ function parsePossiblyWeirdJson(text){
 }
 async function fetchJsonViaProxy(url){
   const proxied = buildProxiedUrl(url);
-  const res = await fetch(url, { cache:'no-store', credentials:'omit', mode:'cors' });
+  const res = await fetch(proxied, { cache:'no-store', credentials:'omit', mode:'cors' });
   if(!res.ok) throw new Error('Proxy HTTP '+res.status);
   const text = await res.text();
   return parsePossiblyWeirdJson(text);
@@ -318,4 +318,5 @@ Notes
 -->
 </body>
 </html>
+
 
