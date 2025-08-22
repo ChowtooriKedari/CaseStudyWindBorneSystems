@@ -19,17 +19,16 @@
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
     .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
 
+    /* Uniform icon */
     .leaflet-div-icon{background:transparent;border:none}
     .wb{display:inline-flex;align-items:center;gap:8px;pointer-events:none}
     .wb-dot{
       position:relative; width:14px; height:14px; border-radius:50%;
       background:
-        radial-gradient( circle at 35% 35%, #ffffffaa 0 28%, transparent 29% ),
+        radial-gradient(circle at 35% 35%, #ffffffaa 0 28%, transparent 29%),
         linear-gradient(135deg,#7dd3fc 0%, #38bdf8 40%, #2563eb 75%, #1e3a8a 100%);
       border:1px solid #0b3e9a;
-      box-shadow:
-        0 0 0 1.5px #fff,
-        0 8px 16px rgba(0,0,0,.18);
+      box-shadow:0 0 0 1.5px #fff, 0 8px 16px rgba(0,0,0,.18);
     }
     .wb-dot::before{
       content:""; position:absolute; inset:-6px; border-radius:50%;
@@ -46,6 +45,13 @@
       background:#fff; border:1px solid #0002; border-radius:999px;
       padding:1px 6px; line-height:16px; box-shadow:0 1px 3px rgba(0,0,0,.08);
     }
+
+    /* Ultra-smooth frame switching */
+    .leaflet-pane.hourPane{
+      transition: opacity .16s linear;
+      will-change: opacity;
+      pointer-events: none; /* no clicks; pure viz */
+    }
   </style>
 </head>
 <body>
@@ -59,25 +65,27 @@
       <span id="proxyStatus" class="status mono">checking proxy…</span>
     </div>
     <div class="row mono" style="font-size:12px">
-      Data via hard-coded proxy. (https://proxy-fmd5.vercel.app/api/proxy?url=)
+      Data via hard-coded proxy (https://proxy-fmd5.vercel.app/api/proxy?url=).
       Label shows <strong>third JSON value × 100 (truncated)</strong>.
     </div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    Tip: 00 = most recent hour. Animation loops 23 → 0. Layers are prebuilt for smooth frames.
+    Tip: 00 = most recent hour. Animation loops 23 → 0. Frames are pre-rendered and cross-faded for smoothness.
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
-
+/* ===== Config ===== */
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
-// Hard-coded proxy (?url= form)
 const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
 
+/* Playback speed (lower = faster) */
+const FRAME_MS = 240;
 
+/* ===== Proxy helper ===== */
 function buildProxiedUrl(target){
   const p = PROXY.trim();
   if (!p) return target;
@@ -87,13 +95,22 @@ function buildProxiedUrl(target){
   return p + encodeURIComponent(target);
 }
 
-// ========= Map =========
+/* ===== Map ===== */
 const map = L.map('map', {worldCopyJump:true}).setView([20,0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 7, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
-// ========= Robust fetch/parse =========
+/* Create 24 panes (one per hour) for zero-jank frame flips */
+const paneNames = Array.from({length: SNAP_MAX}, (_,h)=>`hour-${h.toString().padStart(2,'0')}`);
+paneNames.forEach(name=>{
+  const pane = map.createPane(name);
+  pane.classList.add('hourPane');
+  pane.style.opacity = '0';
+  pane.style.display = 'none';
+});
+
+/* ===== Robust fetch/parse ===== */
 function parsePossiblyWeirdJson(text){
   try { return JSON.parse(text); } catch(_){}
   const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
@@ -115,13 +132,11 @@ async function fetchJsonViaProxy(url){
   return parsePossiblyWeirdJson(text);
 }
 
-// ========= Uniform marker factory (value ×100, decimals removed) =========
+/* ===== Uniform marker (value ×100, truncated) ===== */
 function makeIcon(val){
   let txt = '?';
   const n = Number(val);
-  if (Number.isFinite(n)) {
-    txt = String(Math.trunc(n * 100));
-  }
+  if (Number.isFinite(n)) txt = String(Math.trunc(n * 100));
   return L.divIcon({
     className: 'wb-icon',
     html: `<div class="wb"><span class="wb-dot"></span><span class="wb-val">${txt}</span></div>`,
@@ -130,53 +145,73 @@ function makeIcon(val){
   });
 }
 
-// ========= Data & prebuilt layers =========
-let hourly = [];                     // [24][N] of [lat,lon,val]
-const hourLayers = new Array(SNAP_MAX).fill(null); // LayerGroup per hour
-const frameOrder = Array.from({length:SNAP_MAX}, (_,i)=>SNAP_MAX-1-i); // 23..0
+/* ===== Data & pre-rendered frames ===== */
+let hourly = []; // [24][N] of [lat,lon,val]
+const hourGroups = new Array(SNAP_MAX).fill(null); // FeatureGroup per hour
 
-async function buildHourlyLayers(){
+async function buildHourlyFrames(){
+  // Fetch all 24 hours in parallel
   const snaps = await Promise.all(
     Array.from({length:SNAP_MAX}, (_,i)=>{
       const url = WB_BASE + String(i).padStart(2,'0') + '.json';
       return fetchJsonViaProxy(url).catch(()=>[]);
     })
   );
+
+  // Normalize and rebuild groups
   hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
+
+  // Clear old content
   for(let h=0; h<SNAP_MAX; h++){
-    if(hourLayers[h]) { hourLayers[h].remove(); hourLayers[h] = null; }
-    const layer = L.layerGroup();
+    if(hourGroups[h]) hourGroups[h].clearLayers();
+    else hourGroups[h] = L.featureGroup().addTo(map);
+  }
+
+  // Populate each hour's pane once
+  for(let h=0; h<SNAP_MAX; h++){
+    const pane = paneNames[h];
     const pts = hourly[h] || [];
+    const grp = hourGroups[h];
     for(const p of pts){
       const [lat, lon, val] = p;
-      const marker = L.marker([lat, lon], { icon: makeIcon(val), interactive:false });
-      layer.addLayer(marker);
+      L.marker([lat, lon], { icon: makeIcon(val), interactive:false, pane }).addTo(grp);
     }
-    hourLayers[h] = layer;
   }
 }
 
-// ========= Animation (layer swapping) =========
+/* ===== Animation (pane cross-fade) ===== */
 const frameLabel = document.getElementById('frameLabel');
 const proxyStatus = document.getElementById('proxyStatus');
-let currLayer = null;
+const order = Array.from({length:SNAP_MAX}, (_,i)=>SNAP_MAX-1-i); // 23..0
+let prevHour = null;
 let frameIdx = -1;
 let playing = true;
 let rafId = null;
 let lastTick = 0;
-const FRAME_MS = 900; // adjust playback speed here
 
 function setProxyStatus(ok, msg){
   proxyStatus.textContent = msg;
   proxyStatus.className = 'status mono' + (ok? '' : ' err');
 }
 
-function showFrame(idx){
-  const hour = frameOrder[idx];
-  if(currLayer) currLayer.remove();
-  currLayer = hourLayers[hour];
-  if(currLayer) currLayer.addTo(map);
-  frameLabel.textContent = String(hour).padStart(2,'0') + ' (00=now)';
+function showHourByIndex(idx){
+  const hour = order[idx];
+  const paneName = paneNames[hour];
+
+  // Hide previous (fade out then display:none)
+  if(prevHour !== null){
+    const prevPane = map.getPane(paneNames[prevHour]);
+    prevPane.style.opacity = '0';
+    setTimeout(()=>{ prevPane.style.display = 'none'; }, 170);
+  }
+
+  // Show current (display then fade in next frame)
+  const pane = map.getPane(paneName);
+  pane.style.display = 'block';
+  requestAnimationFrame(()=>{ pane.style.opacity = '1'; });
+
+  frameLabel.textContent = `${String(hour).padStart(2,'0')} (00=now)`;
+  prevHour = hour;
 }
 
 function tick(ts){
@@ -185,8 +220,8 @@ function tick(ts){
   const elapsed = ts - lastTick;
   if(elapsed >= FRAME_MS){
     lastTick = ts;
-    frameIdx = (frameIdx + 1) % frameOrder.length;
-    showFrame(frameIdx);
+    frameIdx = (frameIdx + 1) % order.length;
+    showHourByIndex(frameIdx);
   }
   rafId = requestAnimationFrame(tick);
 }
@@ -194,7 +229,7 @@ function tick(ts){
 function startAnim(){ if(!rafId) rafId = requestAnimationFrame(tick); }
 function stopAnim(){ if(rafId){ cancelAnimationFrame(rafId); rafId = null; }}
 
-// ========= UI =========
+/* ===== UI ===== */
 document.getElementById('toggle').addEventListener('click', ()=>{
   playing = !playing;
   document.getElementById('toggle').textContent = playing ? 'Pause' : 'Play';
@@ -204,28 +239,35 @@ document.getElementById('refresh').addEventListener('click', async ()=>{
   stopAnim();
   frameLabel.textContent = '…';
   try{
-    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    // Use GET; some proxies dislike HEAD
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {cache:'no-store', mode:'cors', credentials:'omit'});
     setProxyStatus(true, 'proxy OK');
   }catch(_){
     setProxyStatus(false, 'proxy unreachable');
   }
-  await buildHourlyLayers();
-  frameIdx = -1;
-  showFrame(++frameIdx);
+  // Reset pane visibility
+  paneNames.forEach(n=>{
+    const p = map.getPane(n);
+    p.style.opacity='0'; p.style.display='none';
+  });
+  prevHour = null; frameIdx = -1; lastTick = 0;
+
+  await buildHourlyFrames();
+  showHourByIndex(++frameIdx);
   startAnim();
 });
 
-// ========= Boot =========
+/* ===== Boot ===== */
 (async function init(){
   try{
-    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {cache:'no-store', mode:'cors', credentials:'omit'});
     setProxyStatus(true, 'proxy OK');
   }catch(_){
     setProxyStatus(false, 'proxy unreachable');
   }
-  await buildHourlyLayers();
+  await buildHourlyFrames();
   frameIdx = -1;
-  showFrame(++frameIdx);
+  showHourByIndex(++frameIdx);
   startAnim();
 })();
 </script>
@@ -233,9 +275,9 @@ document.getElementById('refresh').addEventListener('click', async ()=>{
 <!--
 Notes
 - Hard-coded proxy: https://proxy-fmd5.vercel.app/api/proxy?url=
-- Uniform glossy pin icon + value pill (third JSON value ×100, truncated).
-- No trajectory lines. Prebuilt 24 LayerGroups; animation swaps layers to avoid jank.
+- Icons are uniform; label = third JSON value ×100 (truncated).
+- 24 frames are pre-rendered into 24 panes; animation flips opacity (no add/remove jank).
+- Tweak FRAME_MS to change speed (e.g., 180 for even faster).
 -->
 </body>
 </html>
-
