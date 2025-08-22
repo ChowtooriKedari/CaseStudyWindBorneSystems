@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Windborne Constellation — 24h Animation (Proxy Only)</title>
+  <title>Windborne — 24h Animation (Proxy Only, Uniform Icons)</title>
   <link rel="preconnect" href="https://unpkg.com"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
@@ -14,53 +14,49 @@
     .row{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
     .btn{padding:6px 10px;border-radius:8px;border:1px solid #ccd;background:#f7f7ff;cursor:pointer}
     .btn:active{transform:translateY(1px)}
-    .chip{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef;border:1px solid #ccd;font-size:12px;margin-right:6px}
-    .legend{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px}
-    .legend .swatch{width:16px;height:10px;border-radius:3px;border:1px solid #0001}
     .status{padding:2px 8px;border-radius:999px;border:1px solid #ccd;background:#f5fff5;font-size:12px}
     .status.err{background:#fff5f5;border-color:#f3c0c0}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
     .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
-    .lbl{background:#000a;color:#fff;padding:1px 4px;border-radius:4px;border:1px solid #0003;font-size:11px}
+
+    /* Uniform icon with value text (same size/same look for all) */
+    .wb-pt{display:flex;align-items:center;gap:6px;white-space:nowrap;pointer-events:none}
+    .wb-dot{width:10px;height:10px;border-radius:50%;background:#2563eb;border:1px solid #1e40af;box-shadow:0 0 0 1px #0002}
+    .wb-val{font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#111;
+            background:#fff;border:1px solid #0002;border-radius:4px;padding:0 4px;line-height:16px}
+    .leaflet-div-icon{background:transparent;border:none}
   </style>
 </head>
 <body>
 <div id="app">
   <div class="panel">
-    <h1>Windborne — last 24h (animated)</h1>
+    <h1>Windborne — last 24h (animated, uniform icons)</h1>
     <div class="row">
       <button id="refresh" class="btn">Refresh data</button>
       <button id="toggle" class="btn">Pause</button>
       <label class="mono">Frame: <span id="frameLabel">…</span></label>
       <span id="proxyStatus" class="status mono">checking proxy…</span>
     </div>
-    <div class="row">
-      <span class="chip">Dot = position at hour</span>
-      <span class="chip">Text = 3rd value from JSON</span>
-      <span class="chip">Gray line = inferred 24h track</span>
-    </div>
-    <div class="legend">
-      <div class="swatch" style="background:#74add1"></div>Low
-      <div class="swatch" style="background:#fee08b"></div>Medium
-      <div class="swatch" style="background:#f46d43"></div>High
+    <div class="row mono" style="font-size:12px">
+      Data: <code>a.windbornesystems.com/treasure/00..23.json</code> via hard-coded proxy.
+      No tracks. Same icon for every point. Value = 3rd number in JSON.
     </div>
   </div>
   <div id="map"></div>
   <div class="footer">
-    Data: <code>a.windbornesystems.com/treasure/00..23.json</code> via hard-coded proxy.
-    Animation loops over the last 24 snapshots (23→0). Tracks are stitched by nearest-neighbour (IDs aren’t provided).
+    Tip: 00 = most recent hour. Animation loops 23 → 0. LayerGroups are prebuilt to keep frames smooth.
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
-// ========== Config ==========
+// ========= Config =========
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
-// Hard-coded proxy (Vercel): MUST accept ?url=<encoded>
+// Hard-coded proxy (?url= form)
 const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
 
-// ========== Proxy helper ==========
+// ========= Proxy helper =========
 function buildProxiedUrl(target){
   const p = PROXY.trim();
   if (!p) return target;
@@ -70,36 +66,15 @@ function buildProxiedUrl(target){
   return p + encodeURIComponent(target);
 }
 
-// ========== Map ==========
+// ========= Map =========
 const map = L.map('map', {worldCopyJump:true}).setView([20,0], 2);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 7, attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
-const layers = {
-  points: L.layerGroup().addTo(map),
-  labels: L.layerGroup().addTo(map),
-  tracks: L.layerGroup().addTo(map)
-};
-
-// ========== Utils ==========
-function colorFor(v){
-  const n = Number(v);
-  if(!isFinite(n)) return '#999';
-  if(n<6) return '#74add1';
-  if(n<12) return '#abd9e9';
-  if(n<16) return '#fee08b';
-  if(n<20) return '#fdae61';
-  return '#f46d43';
-}
-
-function isCorsLikeError(err){
-  return err && (err.name === 'TypeError' || /Failed to fetch|CORS|NetworkError/i.test(String(err)));
-}
-
-// Robust JSON parsing (array, JSONL, tolerant commas, or triplets [lat,lon,val])
+// ========= Robust fetch/parse =========
 function parsePossiblyWeirdJson(text){
-  try { return JSON.parse(text); } catch(_){ /* continue */ }
+  try { return JSON.parse(text); } catch(_){}
   const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
   if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
     try { return JSON.parse('['+lines.join(',')+']'); } catch(_){}
@@ -111,8 +86,6 @@ function parsePossiblyWeirdJson(text){
   if(out.length) return out;
   throw new Error('Unparseable JSON');
 }
-
-// Always fetch via proxy (so browsers aren’t blocked by CORS)
 async function fetchJsonViaProxy(url){
   const proxied = buildProxiedUrl(url);
   const res = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
@@ -121,159 +94,132 @@ async function fetchJsonViaProxy(url){
   return parsePossiblyWeirdJson(text);
 }
 
-function haversine(a,b){
-  const R=6371e3, toRad=d=>d*Math.PI/180;
-  const dLat=toRad(b[0]-a[0]), dLon=toRad(b[1]-a[1]);
-  const s1=Math.sin(dLat/2), s2=Math.sin(dLon/2);
-  const aa=s1*s1 + Math.cos(toRad(a[0]))*Math.cos(toRad(b[0]))*s2*s2;
-  return 2*R*Math.asin(Math.sqrt(aa));
+// ========= Uniform marker factory =========
+function makeIcon(val){
+  const txt = Number.isFinite(+val) ? Number(val).toFixed(2) : String(val);
+  return L.divIcon({
+    className: 'wb-icon',
+    html: `<div class="wb-pt"><div class="wb-dot"></div><span class="wb-val">${txt}</span></div>`,
+    iconSize: [1,1], // we size via inner HTML; anchor at point
+    iconAnchor: [0,0]
+  });
 }
 
-// Stitch tracks across hours using greedy nearest-neighbour
-function buildTracks(hourlyPoints, maxJump=800e3){
-  const tracks=[];
-  for(let h=hourlyPoints.length-1; h>=0; h--){
-    const pts = hourlyPoints[h] || [];
-    const used = new Array(pts.length).fill(false);
-    for(const tr of tracks){
-      let best=-1, bestD=Infinity;
-      for(let i=0;i<pts.length;i++) if(!used[i]){
-        const d = haversine(tr.last, [pts[i][0], pts[i][1]]);
-        if(d<bestD){ bestD=d; best=i; }
-      }
-      if(best>=0 && bestD<=maxJump){
-        const p=pts[best]; used[best]=true;
-        tr.pts.push({lat:p[0],lon:p[1],val:p[2],h});
-        tr.last=[p[0],p[1]];
-      }
+// ========= Data & prebuilt layers =========
+let hourly = [];              // [24][N] of [lat,lon,val]
+const hourLayers = new Array(SNAP_MAX).fill(null); // LayerGroup per hour
+const frameOrder = Array.from({length:SNAP_MAX}, (_,i)=>SNAP_MAX-1-i); // 23..0
+
+async function buildHourlyLayers(){
+  // Load all 24 hours via proxy
+  const snaps = await Promise.all(
+    Array.from({length:SNAP_MAX}, (_,i)=>{
+      const url = WB_BASE + String(i).padStart(2,'0') + '.json';
+      return fetchJsonViaProxy(url).catch(()=>[]);
+    })
+  );
+  // Normalize
+  hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
+
+  // Build (or rebuild) LayerGroups once; uniform icon, no lines
+  for(let h=0; h<SNAP_MAX; h++){
+    if(hourLayers[h]) { hourLayers[h].remove(); hourLayers[h] = null; }
+    const layer = L.layerGroup();
+    const pts = hourly[h] || [];
+    for(const p of pts){
+      const [lat, lon, val] = p;
+      const marker = L.marker([lat, lon], { icon: makeIcon(val), interactive:false });
+      layer.addLayer(marker);
     }
-    for(let i=0;i<pts.length;i++) if(!used[i]){
-      const p=pts[i];
-      tracks.push({pts:[{lat:p[0],lon:p[1],val:p[2],h}], last:[p[0],p[1]]});
-    }
+    hourLayers[h] = layer;
   }
-  for(const tr of tracks) tr.pts.sort((a,b)=>a.h-b.h);
-  return tracks;
 }
 
-// ========== Data + Animation ==========
-let hourly = [];       // [24][N] of [lat,lon,val]
-let tracks = [];       // inferred tracks
-let frameOrder = [];   // 23 -> 0
-let timer = null;
-let playing = true;
-let frameIdx = 0;
-
+// ========= Animation (swap whole layers for smoothness) =========
 const frameLabel = document.getElementById('frameLabel');
 const proxyStatus = document.getElementById('proxyStatus');
+let currLayer = null;
+let frameIdx = -1;
+let playing = true;
+let rafId = null;
+let lastTick = 0;
+const FRAME_MS = 900; // ~0.9s per frame (adjust if you want faster/slower)
 
 function setProxyStatus(ok, msg){
   proxyStatus.textContent = msg;
   proxyStatus.className = 'status mono' + (ok? '' : ' err');
 }
 
-async function loadAll(){
-  // probe proxy quickly
+function showFrame(idx){
+  const hour = frameOrder[idx];
+  if(currLayer) currLayer.remove();
+  currLayer = hourLayers[hour];
+  if(currLayer) currLayer.addTo(map);
+  frameLabel.textContent = String(hour).padStart(2,'0') + ' (00=now)';
+}
+
+function tick(ts){
+  if(!playing){ rafId = requestAnimationFrame(tick); return; }
+  if(!lastTick) lastTick = ts;
+  const elapsed = ts - lastTick;
+  if(elapsed >= FRAME_MS){
+    lastTick = ts;
+    frameIdx = (frameIdx + 1) % frameOrder.length;
+    showFrame(frameIdx);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function startAnim(){
+  if(rafId) return;
+  rafId = requestAnimationFrame(tick);
+}
+function stopAnim(){
+  if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
+}
+
+// ========= UI =========
+document.getElementById('toggle').addEventListener('click', ()=>{
+  playing = !playing;
+  document.getElementById('toggle').textContent = playing ? 'Pause' : 'Play';
+});
+
+document.getElementById('refresh').addEventListener('click', async ()=>{
+  stopAnim();
+  frameLabel.textContent = '…';
+  // quick proxy probe
   try{
     await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
     setProxyStatus(true, 'proxy OK');
   }catch(_){
     setProxyStatus(false, 'proxy unreachable');
   }
-
-  const snaps = await Promise.all(
-    Array.from({length:SNAP_MAX}, (_,i)=> {
-      const url = WB_BASE + String(i).padStart(2,'0') + '.json';
-      return fetchJsonViaProxy(url).catch(()=>[]);
-    })
-  );
-
-  hourly = snaps.map(arr => Array.isArray(arr) ? arr.filter(t=>Array.isArray(t) && t.length>=2) : []);
-  tracks = buildTracks(hourly);
-  frameOrder = Array.from({length:SNAP_MAX}, (_,i)=>SNAP_MAX-1-i); // 23..0
-}
-
-function drawTracks(){
-  layers.tracks.clearLayers();
-  for(const tr of tracks){
-    if(tr.pts.length<2) continue;
-    const coords = tr.pts.map(p=>[p.lat, p.lon]);
-    L.polyline(coords, {color:'#888', weight:2, opacity:0.6}).addTo(layers.tracks);
-  }
-}
-
-function drawFrame(hourIndex){
-  layers.points.clearLayers();
-  layers.labels.clearLayers();
-
-  const pts = hourly[hourIndex] || [];
-  for(const p of pts){
-    const [lat, lon, val] = p;
-    const vnum = Number(val);
-    const circle = L.circleMarker([lat,lon], {
-      radius: 5 + (isFinite(vnum)? Math.min(Math.max(vnum,2),22)-2: 0)/2,
-      color: '#000', weight: 1, fillColor: colorFor(vnum), fillOpacity: 0.9
-    }).addTo(layers.points);
-
-    // Permanent tooltip showing the 3rd value as-is (rounded if numeric)
-    const txt = isFinite(vnum) ? vnum.toFixed(2) : String(val);
-    circle.bindTooltip(`<span class="lbl">${txt}</span>`, {permanent:true, direction:'top', offset:[0,-8], opacity:1}).openTooltip();
-  }
-
-  // Label text
-  frameLabel.textContent = String(hourIndex).padStart(2,'0') + ' (00=now)';
-}
-
-function step(){
-  frameIdx = (frameIdx + 1) % frameOrder.length;
-  drawFrame(frameOrder[frameIdx]);
-}
-
-function start(){
-  if(timer) return;
-  timer = setInterval(step, 1200); // 1.2s per frame; loops forever
-}
-
-function stop(){
-  if(!timer) return;
-  clearInterval(timer);
-  timer = null;
-}
-
-// ========== UI ==========
-document.getElementById('refresh').addEventListener('click', async ()=>{
-  stop();
-  playing = true;
-  document.getElementById('toggle').textContent = 'Pause';
-  frameLabel.textContent = '…';
-  await loadAll();
-  drawTracks();
+  await buildHourlyLayers();
   frameIdx = -1; // so first step shows 23
-  step();
-  start();
+  showFrame(++frameIdx);
+  startAnim();
 });
 
-document.getElementById('toggle').addEventListener('click', ()=>{
-  playing = !playing;
-  if(playing){ start(); } else { stop(); }
-  document.getElementById('toggle').textContent = playing ? 'Pause' : 'Play';
-});
-
-// ========== Boot ==========
+// ========= Boot =========
 (async function init(){
-  await loadAll();
-  drawTracks();
+  try{
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    setProxyStatus(true, 'proxy OK');
+  }catch(_){
+    setProxyStatus(false, 'proxy unreachable');
+  }
+  await buildHourlyLayers();
   frameIdx = -1;
-  step(); // draw first frame
-  start(); // begin looping
+  showFrame(++frameIdx);
+  startAnim();
 })();
 </script>
 
 <!--
 Notes
-- Uses ONLY WindBorne 00..23.json (no external model).
-- Always fetches via hard-coded Vercel proxy (?url=).
-- Tracks are inferred because the API doesn’t expose balloon IDs.
+- Hard-coded proxy: https://proxy-fmd5.vercel.app/api/proxy?url=
+- Uniform icon (same size/color for all). No trajectory lines. Third JSON value is shown as text.
+- Prebuilt 24 LayerGroups; animation swaps layers to minimize jank.
 -->
 </body>
 </html>
