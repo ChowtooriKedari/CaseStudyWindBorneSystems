@@ -134,54 +134,39 @@ function makeIcon(val){
 /* ========= Open-Meteo (via proxy) for popup comparisons ========= */
 async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
   const base = 'https://api.open-meteo.com/v1/gfs';
-  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1`;
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
 
   const fetchOM = async (qs) => {
     const url = `${base}?${common}&${qs}`;
-    const res = await fetch((url), { cache:'no-store', credentials:'omit', mode:'cors' });
+    const res = await fetch(url, { cache:'no-store', credentials:'omit', mode:'cors' });
     if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
     return res.json();
   };
 
-  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600; // unix seconds
+  // Target unix hour for the current point in the animation
+  const target = Math.floor(Date.now()/3600000)*3600 - hourOffset*3600;
 
-  const parseTime = (t) => {
-    if (typeof t === 'number') return t;
-    const d = new Date(t).getTime();
-    return Number.isFinite(d) ? Math.floor(d/1000) : NaN;
-  };
   const nearestIdx = (times) => {
     let best = Infinity, idx = 0;
     for (let i=0;i<times.length;i++){
-      const t = parseTime(times[i]);
+      const t = typeof times[i] === 'number' ? times[i] : Math.floor(new Date(times[i]).getTime()/1000);
       const d = Math.abs(t - target);
       if (Number.isFinite(d) && d < best){ best = d; idx = i; }
     }
     return idx;
   };
 
-  try {
-    let j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
-    let times = j.hourly?.time || [];
-    if (times.length){
-      const i = nearestIdx(times);
-      const u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[i];
-      const v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[i];
-      if (typeof u === 'number' && typeof v === 'number') return { speed: Math.hypot(u, v), src: 'uv' };
-    }
-    j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
-    times = j.hourly?.time || [];
-    if (times.length){
-      const i = nearestIdx(times);
-      const ws = j.hourly?.[`wind_speed_${levelHpa}hPa`]?.[i];
-      if (typeof ws === 'number') return { speed: ws, src: 'ws' };
-    }
-    throw new Error('Open-Meteo data unavailable');
-  } catch (e){
-    console.error('Open-Meteo fetch error:', e);
-    throw e;
-  }
+  // ✅ ask GFS for pressure-level wind speed (and direction if you want to display it)
+  const j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
+  const times = j.hourly?.time || [];
+  if (!times.length) throw new Error('Open-Meteo data unavailable');
+
+  const i   = nearestIdx(times);
+  const ws  = j.hourly[`wind_speed_${levelHpa}hPa`][i];
+  if (typeof ws !== 'number') throw new Error('Open-Meteo data unavailable');
+  return { speed: ws, src: 'ws' };
 }
+
 
 /* ========= Data & prebuilt layers ========= */
 let hourly = [];                                  // [24][N] of [lat,lon,val]
@@ -318,6 +303,7 @@ Notes
 -->
 </body>
 </html>
+
 
 
 
