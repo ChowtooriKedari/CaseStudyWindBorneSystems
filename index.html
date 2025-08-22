@@ -65,7 +65,10 @@
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
 const QS = new URLSearchParams(location.search);
-const PROXY = QS.get('proxy') || '';
+const DEFAULT_PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
+// If ?proxy= is present, use that value (even empty to force direct).
+// Otherwise, default to our Vercel proxy so it "just works".
+const PROXY = QS.has('proxy') ? (QS.get('proxy') || '') : DEFAULT_PROXY;
 
 // --- Proxy helpers ---
 function buildProxiedUrl(target){
@@ -106,10 +109,34 @@ function isCorsLikeError(err){
 }
 
 // Robust JSON fetch with optional proxy fallback and strict no-credentials
-async function robustFetchJson(url){
-  // try direct first
+async function robustFetchJson(url, opts = {}){
+  const { alreadyProxied = false, noProxyFallback = false } = opts;
   try{
     const res = await fetch(url, {cache:'no-store', credentials:'omit', mode:'cors'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch(_){ /* fallthrough */ }
+    const lines = text.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+    if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
+      try { return JSON.parse('['+lines.join(',')+']'); } catch(_){ }
+    }
+    const repaired = text.replace(/,(\s*[}\]])/g,'$1');
+    try { return JSON.parse(repaired); } catch(_){ }
+    const tripletRe = /\[\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*,\s*([-+\d\.eE]+)\s*\]/g;
+    const out=[]; let m; while((m=tripletRe.exec(text))) out.push([+m[1],+m[2],+m[3]]);
+    if(out.length) return out;
+    throw new Error('Unparseable JSON');
+  }catch(e){
+    // If a proxy is configured and we tried a direct URL (not already proxied), retry through proxy
+    if(PROXY && !alreadyProxied && !noProxyFallback && isCorsLikeError(e)){
+      const proxied = buildProxiedUrl(url);
+      const r = await fetch(proxied, {cache:'no-store', credentials:'omit', mode:'cors'});
+      if(!r.ok) throw new Error('Proxy HTTP '+r.status);
+      return r.json();
+    }
+    throw e;
+  }
+});
     if(!res.ok) throw new Error('HTTP '+res.status);
     const text = await res.text();
     try { return JSON.parse(text); } catch(_){ /* fallthrough */ }
@@ -135,9 +162,13 @@ async function robustFetchJson(url){
 }
 
 async function fetchSnapshot(h){
-  const direct = WB_BASE + String(h).padStart(2,'0') + '.json';
-  const url = PROXY ? buildProxiedUrl(direct) : direct;
-  return robustFetchJson(url);
+  const hh = String(h).padStart(2,'0');
+  const direct = WB_BASE + hh + '.json';
+  if(PROXY){
+    // Prefer proxy first when configured to avoid CORS errors
+    return robustFetchJson(buildProxiedUrl(direct), { alreadyProxied: true });
+  }
+  return robustFetchJson(direct);
 }
 
 function haversine(a,b){
@@ -303,5 +334,48 @@ Deploy notes
    }
 3) If you control a.windbornesystems.com, add Access-Control-Allow-Origin for your origin on 200/304/204/redirects to avoid needing a proxy.
 -->
+<script>
+// secondary boot script for mode controls and local file loading (appended)
+(function(){
+  const modeStatus = document.getElementById('modeStatus');
+  function setMode(m){ DATA_MODE = m; modeStatus.textContent = m; }
+  const demoBtn = document.getElementById('demoBtn');
+  if(demoBtn){ demoBtn.addEventListener('click', function(){ setMode('demo'); refresh(); }); }
+  const filePicker = document.getElementById('filePicker');
+  if(filePicker){
+    filePicker.addEventListener('change', async function(e){
+      LOCAL_FILES.clear();
+      const files = Array.from(e.target.files || []);
+      for(const f of files){
+        // try to extract HH from the filename like 00.json or anything_07.json
+        const name = f.name.toLowerCase();
+        const dot = name.lastIndexOf('.json');
+        if(dot === -1) continue;
+        // scan backwards for two digits before .json
+        let hh = null;
+        for(let i = dot-1; i>=1; i--){
+          const a = name.charAt(i-1), b = name.charAt(i);
+          if(a>='0'&&a<='9' && b>='0'&&b<='9'){ hh = a+b; break; }
+        }
+        if(!hh) continue;
+        try{
+          const text = await f.text();
+          let data = null;
+          try{ data = JSON.parse(text); }
+          catch{
+            const lines = text.split(/
++/).map(s=>s.trim()).filter(Boolean);
+            if(lines.length>1 && lines.every(s=>s.startsWith('{') && s.endsWith('}'))){
+              data = JSON.parse('['+lines.join(',')+']');
+            }
+          }
+          if(Array.isArray(data)) LOCAL_FILES.set(hh, data);
+        }catch{}
+      }
+      if(LOCAL_FILES.size){ setMode('local'); refresh(); }
+    });
+  }
+})();
+</script>
 </body>
 </html>
