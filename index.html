@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Windborne — 24h Animation (Proxy Only, Uniform Icons)</title>
+  <title>Windborne Application</title>
   <link rel="preconnect" href="https://unpkg.com"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
@@ -19,7 +19,6 @@
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
     .footer{position:absolute;bottom:10px;left:10px;z-index:1000;background:#ffffffd9;padding:8px 10px;border-radius:10px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);max-width:640px}
 
-    /* ===== Better uniform icon ===== */
     .leaflet-div-icon{background:transparent;border:none}
     .wb{display:inline-flex;align-items:center;gap:8px;pointer-events:none}
     .wb-dot{
@@ -52,7 +51,7 @@
 <body>
 <div id="app">
   <div class="panel">
-    <h1>Windborne — last 24h (animated, uniform icons)</h1>
+    <h1>Windborne Application - Kedari Chowtoori</h1>
     <div class="row">
       <button id="refresh" class="btn">Refresh data</button>
       <button id="toggle" class="btn">Pause</button>
@@ -60,7 +59,7 @@
       <span id="proxyStatus" class="status mono">checking proxy…</span>
     </div>
     <div class="row mono" style="font-size:12px">
-      Data via hard-coded proxy. No tracks. Same icon for every point.
+      Data via hard-coded proxy. (https://proxy-fmd5.vercel.app/api/proxy?url=)
       Label shows <strong>third JSON value × 100 (truncated)</strong>.
     </div>
   </div>
@@ -72,13 +71,13 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
-// ========= Config =========
+
 const WB_BASE = 'https://a.windbornesystems.com/treasure/';
 const SNAP_MAX = 24; // 00..23
 // Hard-coded proxy (?url= form)
 const PROXY = 'https://proxy-fmd5.vercel.app/api/proxy?url=';
 
-// ========= Proxy helper =========
+
 function buildProxiedUrl(target){
   const p = PROXY.trim();
   if (!p) return target;
@@ -121,7 +120,6 @@ function makeIcon(val){
   let txt = '?';
   const n = Number(val);
   if (Number.isFinite(n)) {
-    // multiply by 100 and remove decimal part (truncate)
     txt = String(Math.trunc(n * 100));
   }
   return L.divIcon({
@@ -240,3 +238,4 @@ Notes
 -->
 </body>
 </html>
+
