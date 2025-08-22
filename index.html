@@ -126,10 +126,11 @@ function makeIcon(val){
   });
 }
 
-/* ========= Open-Meteo (direct) for popup comparisons ========= */
+/* ========= Open-Meteo (forecast endpoint) for popup comparisons ========= */
 async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
-  const base = 'https://api.open-meteo.com/v1/gfs';
-  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime`;
+  // Use unified forecast endpoint + GFS model to support pressure-level variables
+  const base = 'https://api.open-meteo.com/v1/forecast';
+  const common = `latitude=${lat}&longitude=${lon}&past_days=1&forecast_days=1&timeformat=unixtime&models=gfs_seamless`;
 
   const fetchOM = async (qs) => {
     const url = `${base}?${common}&${qs}`;
@@ -138,28 +139,44 @@ async function getOpenMeteoSpeed(lat, lon, levelHpa, hourOffset){
     return res.json();
   };
 
-  // try u/v — but don't die if it fails
-  let j, times;
+  // Align to the nearest available hour for the chosen offset (00 = now)
+  const target = Math.floor(Date.now()/1000) - hourOffset*3600; // unix seconds
+
+  const parseTime = (t) => {
+    if (typeof t === 'number') return t;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? Math.floor(ms/1000) : NaN;
+  };
+  const nearestIdx = (times) => {
+    let best = Infinity, idx = 0;
+    for (let i=0;i<times.length;i++){
+      const ts = parseTime(times[i]);
+      const d = Math.abs(ts - target);
+      if (Number.isFinite(d) && d < best){ best = d; idx = i; }
+    }
+    return idx;
+  };
+
+  // Try u/v first, fall back to scalar wind speed at the same level
   try {
-    j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
-    times = j.hourly?.time || [];
+    let j = await fetchOM(`hourly=u_component_of_wind_${levelHpa}hPa,v_component_of_wind_${levelHpa}hPa`);
+    let times = j.hourly?.time || [];
     if (times.length){
-      const i = nearestIdx(times); // your existing nearest function
+      const i = nearestIdx(times);
       const u = j.hourly?.[`u_component_of_wind_${levelHpa}hPa`]?.[i];
       const v = j.hourly?.[`v_component_of_wind_${levelHpa}hPa`]?.[i];
       if (typeof u === 'number' && typeof v === 'number') return { speed: Math.hypot(u, v), src: 'uv' };
     }
-  } catch (_) {
-    // fall through to speed/direction
-  }
 
-  // fallback: speed + direction
-  j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
-  times = j.hourly?.time || [];
-  if (times.length){
-    const i = nearestIdx(times);
-    const ws = j.hourly?.[`wind_speed_${levelHpa}hPa`]?.[i];
-    if (typeof ws === 'number') return { speed: ws, src: 'ws' };
+    j = await fetchOM(`hourly=wind_speed_${levelHpa}hPa,wind_direction_${levelHpa}hPa`);
+    times = j.hourly?.time || [];
+    if (times.length){
+      const i = nearestIdx(times);
+      const ws = j.hourly?.[`wind_speed_${levelHpa}hPa`]?.[i];
+      if (typeof ws === 'number') return { speed: ws, src: 'ws' };
+    }
+  } catch (e){
+    console.error('Open-Meteo fetch error:', e);
   }
   throw new Error('Open-Meteo data unavailable');
 }
@@ -195,7 +212,7 @@ async function buildHourlyLayers(){
 
 /* ========= Persistent popup that survives frame changes ========= */
 const persistentPopup = L.popup({ autoClose:false, closeOnClick:false, closeButton:true });
-let selected = null; // {lat, lon} anchor (we'll snap to nearest per-frame)
+let selected = null; // {lat, lon}
 
 function nearestPoint(points, lat, lon){
   if(!points || !points.length) return null;
@@ -212,12 +229,11 @@ function updatePersistentPopupForHour(hour){
   const pts = hourly[hour] || [];
   const np = nearestPoint(pts, selected.lat, selected.lon);
   if(!np){
-    // keep position but tell user no point in this frame
     persistentPopup.setContent('<i>No nearby balloon at this frame.</i>');
     return;
   }
   const [plat, plon, pval] = np;
-  selected.lat = plat; selected.lon = plon; // snap to current nearest
+  selected.lat = plat; selected.lon = plon;
   const valTxt = Number.isFinite(+pval) ? (+pval).toFixed(2) : '?';
 
   const div = document.createElement('div');
@@ -304,7 +320,8 @@ document.getElementById('refresh').addEventListener('click', async ()=>{
   stopAnim();
   frameLabel.textContent = '…';
   try{
-    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    // Use GET for proxy health check (some proxies 404 on HEAD)
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'GET', mode:'cors', credentials:'omit'});
     setProxyStatus(true, 'proxy OK');
   }catch(_){
     setProxyStatus(false, 'proxy unreachable');
@@ -318,7 +335,8 @@ document.getElementById('refresh').addEventListener('click', async ()=>{
 /* ========= Boot ========= */
 (async function init(){
   try{
-    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'HEAD', mode:'cors', credentials:'omit'});
+    // Use GET for proxy health check (some proxies 404 on HEAD)
+    await fetch(buildProxiedUrl(WB_BASE+'00.json'), {method:'GET', mode:'cors', credentials:'omit'});
     setProxyStatus(true, 'proxy OK');
   }catch(_){
     setProxyStatus(false, 'proxy unreachable');
@@ -336,9 +354,8 @@ Notes
 - Uniform glossy pin icon + value pill (third JSON value ×100, truncated).
 - No trajectory lines. Prebuilt 24 LayerGroups; animation swaps layers to avoid jank.
 - Popups persist across frames: a single, map-level popup is used and refreshed on each frame.
-- External dataset: Open-Meteo GFS is used because it’s free, global, and provides pressure-level winds
-  so we can compare model wind to the balloons at similar altitudes, live, without API keys.
+- External dataset: Open-Meteo (forecast endpoint with GFS model) is used because it’s free, global, and
+  provides pressure-level winds, enabling live model-vs-balloon comparisons without API keys.
 -->
 </body>
 </html>
-
